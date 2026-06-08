@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Boss 招聘控制面板</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">LOCAL RECRUITING CONSOLE</p>
+        <h1>Boss 招聘控制面板</h1>
+        <p class="subtitle">AI应用实习生 · 推荐牛人评分与触达</p>
+      </div>
+      <div id="serviceBadge" class="badge neutral">服务检查中</div>
+    </header>
+
+    <section class="panel">
+      <div class="section-title">
+        <div><p class="eyebrow">TASK SETUP</p><h2>任务参数</h2></div>
+        <button id="preflightBtn" class="button secondary">运行前检查</button>
+      </div>
+      <div class="form-grid">
+        <label>岗位选择
+          <select id="jobProfileId"><option value="ai_app_intern">AI应用实习生</option></select>
+        </label>
+        <label>最低触达评分阈值
+          <input id="scoreThreshold" type="number" min="0" max="100" value="70">
+        </label>
+        <label class="wide">今日打招呼目标 <span id="targetValue">20</span>
+          <div class="range-row">
+            <input id="dailyTarget" type="range" min="1" max="200" value="20">
+            <input id="dailyTargetNumber" type="number" min="1" max="200" value="20">
+          </div>
+        </label>
+        <label>每批最大触达数
+          <input id="batchSize" type="number" min="1" max="50" value="50">
+        </label>
+        <label>批次间隔分钟数
+          <input id="batchIntervalMinutes" type="number" min="0" max="1440" step="0.5" value="30">
+        </label>
+        <fieldset class="wide">
+          <legend>运行模式</legend>
+          <label class="radio"><input type="radio" name="mode" value="dry-run" checked> dry-run（只扫描和评分）</label>
+          <label class="radio danger"><input type="radio" name="mode" value="real-run"> real-run（真实打招呼）</label>
+        </fieldset>
+      </div>
+      <div class="actions">
+        <button id="startBtn" class="button primary">开始任务</button>
+        <button id="pauseBtn" class="button danger-button">暂停任务</button>
+        <button id="statusBtn" class="button secondary">查看状态</button>
+        <button id="reportBtn" class="button secondary">查看今日报告</button>
+      </div>
+      <div id="notice" class="notice">等待操作</div>
+    </section>
+
+    <section class="metrics">
+      <article><span>任务状态</span><strong id="status">idle</strong></article>
+      <article><span>已扫描</span><strong id="scanned">0</strong></article>
+      <article><span>通过评分</span><strong id="passed">0</strong></article>
+      <article><span>已打招呼</span><strong id="greeted">0</strong></article>
+      <article><span>跳过</span><strong id="skipped">0</strong></article>
+      <article><span>待复核</span><strong id="review">0</strong></article>
+      <article><span>当前批次</span><strong id="currentBatch">0</strong></article>
+      <article><span>剩余批次</span><strong id="remainingBatches">0</strong></article>
+    </section>
+
+    <section class="panel split">
+      <div>
+        <div class="section-title compact">
+          <div><p class="eyebrow">JOB PROFILE</p><h2>岗位画像</h2></div>
+          <button id="loadProfileBtn" class="text-button">刷新</button>
+        </div>
+        <pre id="profileView">加载中...</pre>
+      </div>
+      <div>
+        <div class="section-title compact"><div><p class="eyebrow">JD TO PROFILE</p><h2>从 JD 生成画像</h2></div></div>
+        <textarea id="jd" rows="11" placeholder="粘贴 HR 提供的 JD。未配置 API Key 时可直接维护 config/job-profiles/ai_app_intern.json。"></textarea>
+        <button id="generateBtn" class="button secondary full">生成并保存岗位画像</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title compact"><div><p class="eyebrow">DETAILS</p><h2 id="detailTitle">运行详情</h2></div></div>
+      <pre id="details">暂无数据</pre>
+    </section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

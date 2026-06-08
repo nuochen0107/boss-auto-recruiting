@@ -1,0 +1,43 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local dependencies and editor files
+.venv/
+node_modules/
+.DS_Store
+.vscode/
+.idea/
+
+# Runtime data and candidate personal information
+data/
+output/
+work/
+course_report/
+tools/
+*.log
+*.pid
+
+# Local Boss/Feishu configuration contains credentials
+boss-loop/assets/default-config.yaml
+
+# Resume and document artifacts
+*.pdf
+*.docx
+*.xlsx
+*.xls
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+coverage/
+.coverage
+
+# Temporary files
+*.tmp
+*.swp
+*~

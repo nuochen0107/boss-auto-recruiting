@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "job_name",
+    "city",
+    "salary_range",
+    "education_requirements",
+    "experience_requirements",
+    "must_have",
+    "nice_to_have",
+    "reject_conditions",
+    "target_candidate_summary",
+    "greeting_template",
+    "score_threshold_default"
+  ],
+  "properties": {
+    "job_name": { "type": "string", "minLength": 1 },
+    "city": { "type": "array", "items": { "type": "string" } },
+    "salary_range": { "type": "string" },
+    "education_requirements": { "type": "array", "items": { "type": "string" } },
+    "experience_requirements": { "type": "string" },
+    "must_have": { "type": "array", "items": { "type": "string" } },
+    "nice_to_have": { "type": "array", "items": { "type": "string" } },
+    "reject_conditions": { "type": "array", "items": { "type": "string" } },
+    "target_candidate_summary": { "type": "string" },
+    "greeting_template": { "type": "string", "minLength": 1 },
+    "score_threshold_default": { "type": "number", "minimum": 0, "maximum": 100 }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,21 @@
+# Copy to default-config.yaml and fill only the settings required locally.
+job_name: "AI应用实习生"
+job_id: ""
+proxy_url: "http://127.0.0.1:3456"
+
+max_greet_per_run: 20
+max_scan_per_run: 80
+max_detail_reads_per_run: 40
+max_list_scroll_rounds: 4
+recommended_greet_interval_seconds_min: 3
+recommended_greet_interval_seconds_max: 8
+health_check_every_candidates: 10
+stop_on_captcha: true
+stop_on_login_error: true
+default_mode: "dry-run"
+
+state_file: "/absolute/path/to/boss-auto-recruiting/data/briefs/boss-auto-lightweight-loop-state.json"
+run_log_jsonl_file: "/absolute/path/to/boss-auto-recruiting/data/briefs/boss-auto-lightweight-loop-run.jsonl"
+lock_dir: "/absolute/path/to/boss-auto-recruiting/data/briefs/boss-auto.lockdir"
+
+# Keep all credentials in .env.local instead of this YAML file.

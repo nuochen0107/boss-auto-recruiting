@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Boss 招聘自动化控制面板</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Boss 招聘自动化控制面板</h1>
+          <p id="subtitle">本地运行 · 状态驱动 · 人工接管</p>
+        </div>
+        <div class="status-pill" id="taskPill">空闲</div>
+      </header>
+
+      <section class="toolbar">
+        <label class="field">
+          <span>岗位名</span>
+          <select id="jobSelect"></select>
+          <input id="jobName" placeholder="例如 Python" />
+        </label>
+        <label class="check">
+          <input id="dryRun" type="checkbox" checked />
+          <span>演练模式（不发送、不下载、不上传）</span>
+        </label>
+        <label class="check">
+          <input id="skipRecommend" type="checkbox" />
+          <span>跳过推荐页</span>
+        </label>
+        <button id="refreshBtn" class="secondary">刷新</button>
+      </section>
+
+      <section class="grid metrics" id="metrics"></section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>环境自检</h2>
+          <div class="button-row">
+            <button id="proxyBtn" class="secondary">启动 CDP Proxy</button>
+            <button id="healthBtn" class="secondary">重新自检</button>
+          </div>
+        </div>
+        <div class="checks" id="checks"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>执行控制</h2>
+          <div class="button-row">
+            <button id="clearLockBtn" class="secondary">清理陈旧任务锁</button>
+            <button id="stopBtn" class="danger">暂停当前任务</button>
+          </div>
+        </div>
+        <div class="actions">
+          <button data-action="greet">筛选 / 打招呼</button>
+          <button data-action="collect">收取简历</button>
+          <button data-action="sync">同步飞书</button>
+          <button data-action="auto" class="primary">执行一轮完整流程</button>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>待收简历预览</h2>
+            <span id="collectCount" class="muted"></span>
+          </div>
+          <div id="collectPreview" class="list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>当前任务输出</h2>
+            <span id="taskMeta" class="muted"></span>
+          </div>
+          <pre id="taskOutput" class="console">暂无运行任务</pre>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>最近运行日志</h2>
+          <button id="logsBtn" class="secondary">刷新日志</button>
+        </div>
+        <div id="logs" class="logs"></div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

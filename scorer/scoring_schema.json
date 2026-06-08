@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "fit_score",
+    "decision",
+    "matched_reason",
+    "reasons",
+    "risk_flags",
+    "suggested_message"
+  ],
+  "properties": {
+    "fit_score": { "type": "number", "minimum": 0, "maximum": 100 },
+    "decision": { "enum": ["greet", "skip", "review"] },
+    "matched_reason": { "type": "string" },
+    "reasons": { "type": "array", "items": { "type": "string" } },
+    "risk_flags": { "type": "array", "items": { "type": "string" } },
+    "suggested_message": { "type": "string" }
+  },
+  "additionalProperties": false
+}

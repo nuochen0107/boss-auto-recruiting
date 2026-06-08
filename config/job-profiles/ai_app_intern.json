@@ -1,0 +1,26 @@
+{
+  "job_name": "AI应用实习生",
+  "city": ["南京"],
+  "salary_range": "",
+  "education_requirements": ["本科", "硕士"],
+  "experience_requirements": "在校生、应届生或低年限候选人",
+  "must_have": [
+    "对 AI 应用开发有兴趣",
+    "具备基础编程能力"
+  ],
+  "nice_to_have": [
+    "Python",
+    "后端开发",
+    "大模型应用",
+    "数据处理",
+    "项目实践"
+  ],
+  "reject_conditions": [
+    "求职方向完全不相关",
+    "城市或期望明显不匹配",
+    "薪资期望明显超出范围"
+  ],
+  "target_candidate_summary": "适合具备编程基础、对 AI 应用和工程落地感兴趣的实习生或应届生。",
+  "greeting_template": "你好，看到你有{{matched_reason}}相关经历，我们这边有一个{{job_name}}岗位，想了解下你的求职意向吗？",
+  "score_threshold_default": 70
+}
