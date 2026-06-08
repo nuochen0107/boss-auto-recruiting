@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { callJsonLlm, hasConfiguredLlm } from "./llm_config.mjs";
+import { callJsonLlm, hasConfiguredLlm, parseLlmJsonObject } from "./llm_config.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROFILE_DIR = path.join(ROOT, "config/job-profiles");
@@ -55,12 +55,6 @@ export function saveJobProfile(profileId, profile) {
   return { profile: validated, path: file };
 }
 
-function extractJson(text) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) throw new Error("llm_response_not_plain_json");
-  return JSON.parse(trimmed);
-}
-
 export { hasConfiguredLlm };
 
 export async function generateJobProfile({ profileId = "ai_app_intern", jd }) {
@@ -78,8 +72,8 @@ export async function generateJobProfile({ profileId = "ai_app_intern", jd }) {
 
 JD:
 ${String(jd).slice(0, 16000)}`;
-  const result = await callJsonLlm(prompt, { maxTokens: 1800 });
-  const profile = validateJobProfile(extractJson(result.content));
+  const result = await callJsonLlm(prompt, { maxTokens: 3200 });
+  const profile = validateJobProfile(parseLlmJsonObject(result.content));
   return { ...saveJobProfile(profileId, profile), provider: result.provider, model: result.model };
 }
 

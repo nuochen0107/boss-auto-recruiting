@@ -81,6 +81,19 @@ export function hasConfiguredLlm() {
   return Boolean(config?.apiKey && config?.baseUrl && config?.model);
 }
 
+export function parseLlmJsonObject(text) {
+  let value = String(text || "").trim();
+  value = value.replace(/^(?:<think>[\s\S]*?<\/think>\s*)+/i, "").trim();
+  const fenced = value.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) value = fenced[1].trim();
+  if (!value.startsWith("{") || !value.endsWith("}")) throw new Error("llm_response_not_plain_json");
+  const parsed = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("llm_response_not_json_object");
+  }
+  return parsed;
+}
+
 export async function callJsonLlm(prompt, { maxTokens = 1200 } = {}) {
   const config = getLlmConfig();
   if (!config?.apiKey || !config?.baseUrl || !config?.model) throw new Error("llm_api_key_not_configured");

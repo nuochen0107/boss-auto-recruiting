@@ -1,4 +1,4 @@
-import { callJsonLlm, hasConfiguredLlm } from "./llm_config.mjs";
+import { callJsonLlm, hasConfiguredLlm, parseLlmJsonObject } from "./llm_config.mjs";
 
 function validateScore(value) {
   if (!value || typeof value !== "object") throw new Error("score_must_be_object");
@@ -19,9 +19,7 @@ function validateScore(value) {
 }
 
 function parsePlainJson(text) {
-  const value = String(text || "").trim();
-  if (!value.startsWith("{") || !value.endsWith("}")) throw new Error("llm_score_not_plain_json");
-  return validateScore(JSON.parse(value));
+  return validateScore(parseLlmJsonObject(text));
 }
 
 export async function judgeCandidate(candidate, profile) {
@@ -46,6 +44,6 @@ ${JSON.stringify(profile)}
 
 候选人：
 ${JSON.stringify(candidate)}`;
-  const result = await callJsonLlm(prompt, { maxTokens: 1000 });
+  const result = await callJsonLlm(prompt, { maxTokens: 2400 });
   return { ...parsePlainJson(result.content), source: "llm", provider: result.provider, model: result.model };
 }
