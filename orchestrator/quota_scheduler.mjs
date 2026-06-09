@@ -1,14 +1,12 @@
 export function normalizeRunOptions(input = {}) {
   const dailyTarget = clampInteger(input.dailyTarget, 1, 200, 20);
   const batchSize = clampInteger(input.batchSize, 1, 50, 50);
-  const scoreThreshold = clampInteger(input.scoreThreshold, 0, 100, 70);
   const batchIntervalMinutes = clampNumber(input.batchIntervalMinutes, 0, 1440, 30);
   const mode = input.mode === "real-run" ? "real-run" : "dry-run";
   return {
-    jobProfileId: String(input.jobProfileId || "ai_app_intern"),
+    jobId: String(input.jobId || input.jobProfileId || "ai_app_intern"),
     dailyTarget,
     batchSize,
-    scoreThreshold,
     batchIntervalMinutes,
     mode,
   };

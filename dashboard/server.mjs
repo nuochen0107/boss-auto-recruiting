@@ -3,7 +3,6 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateJobProfile, hasConfiguredLlm, loadJobProfile } from "../scorer/job_profile_agent.mjs";
 import { getCurrentRun, getTodayReport, pauseRun, preflight, startRun } from "../orchestrator/recommend_greet_runner.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -35,17 +34,10 @@ async function body(req) {
 
 async function api(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return sendJson(res, { ok: true, service: "boss-recruiting-dashboard", timestamp: new Date().toISOString(), llmConfigured: hasConfiguredLlm() });
+    return sendJson(res, { ok: true, service: "boss-recruiting-dashboard", timestamp: new Date().toISOString(), scoringEnabled: false });
   }
   if (req.method === "GET" && url.pathname === "/api/preflight") {
-    return sendJson(res, await preflight(url.searchParams.get("jobProfileId") || "ai_app_intern"));
-  }
-  if (req.method === "GET" && url.pathname === "/api/job-profile/ai-app-intern") {
-    return sendJson(res, { profileId: "ai_app_intern", profile: loadJobProfile("ai_app_intern"), llmConfigured: hasConfiguredLlm() });
-  }
-  if (req.method === "POST" && url.pathname === "/api/job-profile/ai-app-intern/generate") {
-    const payload = await body(req);
-    return sendJson(res, await generateJobProfile({ profileId: "ai_app_intern", jd: payload.jd }), 201);
+    return sendJson(res, await preflight());
   }
   if (req.method === "POST" && url.pathname === "/api/runs/start") return sendJson(res, await startRun(await body(req)), 202);
   if (req.method === "POST" && url.pathname === "/api/runs/pause") return sendJson(res, pauseRun());

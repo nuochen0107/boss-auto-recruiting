@@ -12,7 +12,7 @@
       <div>
         <p class="eyebrow">LOCAL RECRUITING CONSOLE</p>
         <h1>Boss 招聘控制面板</h1>
-        <p class="subtitle">AI应用实习生 · 推荐牛人评分与触达</p>
+        <p class="subtitle">AI应用实习生 · 推荐牛人批量触达</p>
       </div>
       <div id="serviceBadge" class="badge neutral">服务检查中</div>
     </header>
@@ -24,10 +24,7 @@
       </div>
       <div class="form-grid">
         <label>岗位选择
-          <select id="jobProfileId"><option value="ai_app_intern">AI应用实习生</option></select>
-        </label>
-        <label>最低触达评分阈值
-          <input id="scoreThreshold" type="number" min="0" max="100" value="70">
+          <select id="jobId"><option value="ai_app_intern">AI应用实习生</option></select>
         </label>
         <label class="wide">今日打招呼目标 <span id="targetValue">20</span>
           <div class="range-row">
@@ -43,7 +40,7 @@
         </label>
         <fieldset class="wide">
           <legend>运行模式</legend>
-          <label class="radio"><input type="radio" name="mode" value="dry-run" checked> dry-run（只扫描和评分）</label>
+          <label class="radio"><input type="radio" name="mode" value="dry-run" checked> dry-run（只扫描，不点击）</label>
           <label class="radio danger"><input type="radio" name="mode" value="real-run"> real-run（真实打招呼）</label>
         </fieldset>
       </div>
@@ -59,27 +56,12 @@
     <section class="metrics">
       <article><span>任务状态</span><strong id="status">idle</strong></article>
       <article><span>已扫描</span><strong id="scanned">0</strong></article>
-      <article><span>通过评分</span><strong id="passed">0</strong></article>
+      <article><span>待触达</span><strong id="eligible">0</strong></article>
       <article><span>已打招呼</span><strong id="greeted">0</strong></article>
       <article><span>跳过</span><strong id="skipped">0</strong></article>
-      <article><span>待复核</span><strong id="review">0</strong></article>
+      <article><span>失败</span><strong id="failed">0</strong></article>
       <article><span>当前批次</span><strong id="currentBatch">0</strong></article>
       <article><span>剩余批次</span><strong id="remainingBatches">0</strong></article>
-    </section>
-
-    <section class="panel split">
-      <div>
-        <div class="section-title compact">
-          <div><p class="eyebrow">JOB PROFILE</p><h2>岗位画像</h2></div>
-          <button id="loadProfileBtn" class="text-button">刷新</button>
-        </div>
-        <pre id="profileView">加载中...</pre>
-      </div>
-      <div>
-        <div class="section-title compact"><div><p class="eyebrow">JD TO PROFILE</p><h2>从 JD 生成画像</h2></div></div>
-        <textarea id="jd" rows="11" placeholder="粘贴 HR 提供的 JD。未配置 API Key 时可直接维护 config/job-profiles/ai_app_intern.json。"></textarea>
-        <button id="generateBtn" class="button secondary full">生成并保存岗位画像</button>
-      </div>
     </section>
 
     <section class="panel">

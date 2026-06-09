@@ -4,8 +4,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { hasConfiguredLlm, loadJobProfile, profilePath } from "../scorer/job_profile_agent.mjs";
-import { scoreCandidate } from "../scorer/candidate_scorer.mjs";
 import { buildBatchPlan, normalizeRunOptions } from "./quota_scheduler.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -20,6 +18,7 @@ const PROXY = (process.env.CDP_PROXY_URL || "http://127.0.0.1:3456").replace(/\/
 const MAX_CONSECUTIVE_FAILURES = Math.max(1, Number(process.env.BOSS_MAX_CONSECUTIVE_FAILURES || 3));
 const GREET_DELAY_MIN_MS = Math.max(1000, Number(process.env.BOSS_GREET_DELAY_MIN_MS || 3000));
 const GREET_DELAY_MAX_MS = Math.max(GREET_DELAY_MIN_MS, Number(process.env.BOSS_GREET_DELAY_MAX_MS || 8000));
+const JOB_NAME = "AI应用实习生";
 
 let activeTask = null;
 let pauseRequested = false;
@@ -293,43 +292,6 @@ async function confirmGreeting(targetId, index) {
   return JSON.parse(raw);
 }
 
-async function trySendSuggestedMessage(targetId, message, candidateName) {
-  if (!message) return { sent: false, reason: "empty_message" };
-  const prepared = JSON.parse(await evalTarget(targetId, `JSON.stringify((() => {
-    const container = document.querySelector('.chat-container-private');
-    if (!container || !(container.innerText || '').includes(${JSON.stringify(candidateName)})) {
-      return { ok: false, reason: 'candidate_chat_not_confirmed' };
-    }
-    const editor = container.querySelector('[contenteditable="true"]') || document.querySelector('.chat-input [contenteditable="true"]');
-    if (!editor) return { ok: false, reason: 'editor_not_found' };
-    const rect = editor.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return { ok: false, reason: 'editor_not_visible' };
-    editor.focus();
-    editor.innerText = ${JSON.stringify(message)};
-    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(message)} }));
-    const button = [...document.querySelectorAll('.chat-container-private .submit,.chat-input .submit,button,[role="button"]')]
-      .find(el => {
-        const r = el.getBoundingClientRect();
-        const text = (el.innerText || el.textContent || '').trim();
-        return r.width > 0 && r.height > 0 && (/发送/.test(text) || String(el.className || '').includes('submit'));
-      });
-    if (!button) return { ok: false, reason: 'send_button_not_found' };
-    const marker = 'dashboard-send-' + Date.now();
-    button.setAttribute('data-recruit-dashboard-send', marker);
-    return { ok: true, selector: '[data-recruit-dashboard-send="' + marker + '"]' };
-  })())`));
-  if (!prepared.ok) return { sent: false, reason: prepared.reason };
-  await clickSelector(targetId, prepared.selector);
-  await wait(800);
-  const confirmed = JSON.parse(await evalTarget(targetId, `JSON.stringify((() => {
-    const editor = document.querySelector('.chat-container-private [contenteditable="true"],.chat-input [contenteditable="true"]');
-    const editorText = (editor?.innerText || editor?.textContent || '').trim();
-    const pageText = document.body?.innerText || '';
-    return { sent: !editorText.includes(${JSON.stringify(message.slice(0, 16))}) && pageText.includes(${JSON.stringify(message.slice(0, 16))}) };
-  })())`));
-  return { sent: Boolean(confirmed.sent), reason: confirmed.sent ? "" : "message_not_confirmed" };
-}
-
 function candidateId(card) {
   if (card.data_id) return `boss_recommend:${card.data_id}`;
   const hrefId = String(card.href || "").match(/(?:geek|uid|id)[=/]([^?&#/]+)/i)?.[1];
@@ -377,20 +339,17 @@ function wait(ms) {
   });
 }
 
-function logDecision(candidate, score, actionTaken, error = "") {
+function logDecision(candidate, actionTaken, error = "", reason = "") {
   const record = {
     run_id: activeTask.state.run_id,
     timestamp: now(),
-    job_profile_id: activeTask.state.options.jobProfileId,
+    flow_mode: "direct_greet",
+    job_id: activeTask.state.options.jobId,
     candidate_id: candidate.candidate_id,
     candidate_name: candidate.name,
     raw_text: candidate.raw_text,
-    fit_score: score.fit_score,
-    decision: score.decision,
-    reasons: score.reasons,
-    risk_flags: score.risk_flags,
-    suggested_message: score.suggested_message,
-    message_delivery: score.message_delivery || "",
+    decision: actionTaken === "skipped" ? "skip" : "direct_greet",
+    reason,
     action_taken: actionTaken,
     error,
   };
@@ -405,7 +364,7 @@ function increment(patch) {
   updateState({ counters });
 }
 
-async function runBatch(targetId, profile, batch) {
+async function runBatch(targetId, batch) {
   const options = activeTask.state.options;
   const attempted = activeTask.attempted;
   let batchPassed = 0;
@@ -418,7 +377,7 @@ async function runBatch(targetId, profile, batch) {
     throwIfStopped();
     const health = await inspectPage(targetId);
     checkSafety(health);
-    const data = await readCards(targetId, profile.job_name);
+    const data = await readCards(targetId, JOB_NAME);
     checkSafety(data);
 
     const rawCard = (data.cards || []).find((card) => card.name && !attempted.has(candidateId(card)));
@@ -454,49 +413,35 @@ async function runBatch(targetId, profile, batch) {
 
     if (activeTask.processed.has(id) || activeTask.processed.has(legacyId)) {
       increment({ skipped: 1 });
-      logDecision(candidate, {
-        fit_score: 0, decision: "skip", reasons: ["今日或历史记录中已触达"],
-        risk_flags: ["duplicate_candidate"], suggested_message: "",
-      }, "skipped");
+      logDecision(candidate, "skipped", "", "今日或历史记录中已触达");
       continue;
     }
 
-    const score = await scoreCandidate(candidate, profile, options.scoreThreshold);
-    if (score.decision === "greet" && score.fit_score >= options.scoreThreshold) {
-      increment({ passed: 1 });
-      if (options.mode === "dry-run") {
-        batchPassed += 1;
-        logDecision(candidate, score, "dry_run_only", score.error || "");
-        continue;
-      }
+    increment({ eligible: 1 });
+    if (options.mode === "dry-run") {
+      batchPassed += 1;
+      logDecision(candidate, "dry_run_only");
+      continue;
+    }
 
-      try {
-        await clickCard(targetId, rawCard);
-        const confirmation = await confirmGreeting(targetId, rawCard.index);
-        checkSafety(confirmation);
-        if (!confirmation.ok) throw new Error("greet_no_state_change");
-        activeTask.processed.add(id);
-        activeTask.processed.add(legacyId);
-        increment({ greeted: 1 });
-        batchPassed += 1;
-        const messageResult = await trySendSuggestedMessage(targetId, score.suggested_message, candidate.name);
-        score.message_delivery = messageResult.sent ? "custom_message_sent" : "platform_default_greeting";
-        logDecision(candidate, score, "greeted");
-        consecutiveFailures = 0;
-        await wait(GREET_DELAY_MIN_MS + Math.random() * (GREET_DELAY_MAX_MS - GREET_DELAY_MIN_MS));
-      } catch (error) {
-        consecutiveFailures += 1;
-        increment({ failed: 1 });
-        logDecision(candidate, score, "failed", String(error.message || error));
-        if (/^paused_/.test(String(error.message || error))) throw error;
-        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) throw new Error("paused_consecutive_failures");
-      }
-    } else if (score.decision === "review") {
-      increment({ review: 1 });
-      logDecision(candidate, score, "skipped", score.error || "");
-    } else {
-      increment({ skipped: 1 });
-      logDecision(candidate, score, "skipped", score.error || "");
+    try {
+      await clickCard(targetId, rawCard);
+      const confirmation = await confirmGreeting(targetId, rawCard.index);
+      checkSafety(confirmation);
+      if (!confirmation.ok) throw new Error("greet_no_state_change");
+      activeTask.processed.add(id);
+      activeTask.processed.add(legacyId);
+      increment({ greeted: 1 });
+      batchPassed += 1;
+      logDecision(candidate, "greeted");
+      consecutiveFailures = 0;
+      await wait(GREET_DELAY_MIN_MS + Math.random() * (GREET_DELAY_MAX_MS - GREET_DELAY_MIN_MS));
+    } catch (error) {
+      consecutiveFailures += 1;
+      increment({ failed: 1 });
+      logDecision(candidate, "failed", String(error.message || error));
+      if (/^paused_/.test(String(error.message || error))) throw error;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) throw new Error("paused_consecutive_failures");
     }
   }
   return batchPassed;
@@ -506,9 +451,8 @@ async function execute(options) {
   let finalStatus = "completed";
   let errorMessage = "";
   try {
-    const preflightResult = await preflight(options.jobProfileId, { ignoreActiveTask: true });
+    const preflightResult = await preflight({ ignoreActiveTask: true });
     if (!preflightResult.ok) throw new Error(preflightResult.errors[0] || "preflight_failed");
-    const profile = loadJobProfile(options.jobProfileId);
     const target = await findBossTarget();
     await gotoRecommend(target.targetId);
     checkSafety(await inspectPage(target.targetId));
@@ -520,11 +464,11 @@ async function execute(options) {
         current_batch: batch.number,
         remaining_batches: activeTask.state.batch_plan.length - batch.number,
       }, "batch_start");
-      await runBatch(target.targetId, profile, batch);
+      await runBatch(target.targetId, batch);
       updateState({}, "batch_complete");
       const reached = options.mode === "real-run"
         ? activeTask.state.counters.greeted >= options.dailyTarget
-        : activeTask.state.counters.passed >= options.dailyTarget;
+        : activeTask.state.counters.eligible >= options.dailyTarget;
       if (reached) break;
       if (batch.number < activeTask.state.batch_plan.length) {
         const nextRunAt = new Date(Date.now() + options.batchIntervalMinutes * 60000).toISOString();
@@ -534,7 +478,7 @@ async function execute(options) {
     }
     const reached = options.mode === "real-run"
       ? activeTask.state.counters.greeted >= options.dailyTarget
-      : activeTask.state.counters.passed >= options.dailyTarget;
+      : activeTask.state.counters.eligible >= options.dailyTarget;
     if (!reached) {
       finalStatus = "completed_partial";
       errorMessage = "target_not_reached_no_more_candidates";
@@ -556,14 +500,13 @@ async function execute(options) {
   }
 }
 
-export async function preflight(jobProfileId = "ai_app_intern", { ignoreActiveTask = false } = {}) {
+export async function preflight({ ignoreActiveTask = false } = {}) {
   const checks = [];
   const errors = [];
   const add = (key, ok, detail) => {
     checks.push({ key, ok, detail });
     if (!ok) errors.push(detail);
   };
-  add("job_profile", fs.existsSync(profilePath(jobProfileId)), fs.existsSync(profilePath(jobProfileId)) ? "岗位画像已就绪" : "job_profile_not_found");
   add("no_active_run", ignoreActiveTask || !activeTask, ignoreActiveTask || !activeTask ? "当前无运行中任务" : "run_already_active");
   const runnerLock = lockInfo(RUN_LOCK_DIR);
   const legacyLock = lockInfo(OLD_LOCK_DIR);
@@ -591,13 +534,7 @@ export async function startRun(input = {}) {
     throw error;
   }
   const options = normalizeRunOptions(input);
-  loadJobProfile(options.jobProfileId);
-  if (options.mode === "real-run" && !hasConfiguredLlm()) {
-    const error = new Error("real_run_requires_llm_api_key");
-    error.statusCode = 422;
-    throw error;
-  }
-  const preflightResult = await preflight(options.jobProfileId);
+  const preflightResult = await preflight();
   if (!preflightResult.ok) {
     const error = new Error(preflightResult.errors.join(";"));
     error.statusCode = 422;
@@ -620,7 +557,7 @@ export async function startRun(input = {}) {
     remaining_batches: batchPlan.length,
     batch_plan: batchPlan,
     next_batch_at: "",
-    counters: { scanned: 0, passed: 0, greeted: 0, skipped: 0, review: 0, failed: 0 },
+    counters: { scanned: 0, eligible: 0, greeted: 0, skipped: 0, failed: 0 },
     error: "",
   };
   try {
@@ -650,18 +587,18 @@ export function pauseRun() {
 export function getCurrentRun() {
   return activeTask?.state || readJson(CURRENT_FILE, {
     status: "idle",
-    counters: { scanned: 0, passed: 0, greeted: 0, skipped: 0, review: 0, failed: 0 },
+    counters: { scanned: 0, eligible: 0, greeted: 0, skipped: 0, failed: 0 },
   });
 }
 
 export function getTodayReport() {
-  const decisions = readJsonl(candidateLogFile());
-  const runEvents = readJsonl(runLogFile());
+  const decisions = readJsonl(candidateLogFile()).filter((item) => item.flow_mode === "direct_greet");
   const state = getCurrentRun();
-  const scores = decisions.map((item) => Number(item.fit_score)).filter(Number.isFinite);
+  const runEvents = readJsonl(runLogFile()).filter((item) => item.run_id === state.run_id);
   const skipReasons = {};
-  for (const item of decisions.filter((record) => record.decision === "skip")) {
-    for (const reason of item.reasons || ["未知原因"]) skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+  for (const item of decisions.filter((record) => record.action_taken === "skipped")) {
+    const reason = item.reason || "未知原因";
+    skipReasons[reason] = (skipReasons[reason] || 0) + 1;
   }
   const errors = [...new Set([
     ...decisions.map((item) => item.error).filter(Boolean),
@@ -673,10 +610,8 @@ export function getTodayReport() {
     target: state.options?.dailyTarget || 0,
     greeted: decisions.filter((item) => item.action_taken === "greeted").length,
     scanned: decisions.length,
-    passed: decisions.filter((item) => item.decision === "greet").length,
-    skipped: decisions.filter((item) => item.decision === "skip").length,
-    review: decisions.filter((item) => item.decision === "review").length,
-    average_score: scores.length ? Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length * 10) / 10 : 0,
+    eligible: decisions.filter((item) => ["dry_run_only", "greeted"].includes(item.action_taken)).length,
+    skipped: decisions.filter((item) => item.action_taken === "skipped").length,
     skip_reason_distribution: skipReasons,
     errors,
     current_run_complete: state.status === "completed",
@@ -693,9 +628,8 @@ function parseCli(argv) {
     index += 1;
   }
   return {
-    jobProfileId: out.job || "ai_app_intern",
+    jobId: out.job || "ai_app_intern",
     dailyTarget: out.target,
-    scoreThreshold: out.threshold,
     batchSize: out["batch-size"],
     batchIntervalMinutes: out["batch-interval-minutes"],
     mode: out.mode,

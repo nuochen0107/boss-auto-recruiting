@@ -28,10 +28,10 @@ function renderState(state) {
   const counters = state.counters || {};
   $("status").textContent = state.status || "idle";
   $("scanned").textContent = counters.scanned || 0;
-  $("passed").textContent = counters.passed || 0;
+  $("eligible").textContent = counters.eligible || 0;
   $("greeted").textContent = counters.greeted || 0;
   $("skipped").textContent = counters.skipped || 0;
-  $("review").textContent = counters.review || 0;
+  $("failed").textContent = counters.failed || 0;
   $("currentBatch").textContent = state.current_batch || 0;
   $("remainingBatches").textContent = state.remaining_batches || 0;
   $("details").textContent = JSON.stringify(state, null, 2);
@@ -42,9 +42,8 @@ function renderState(state) {
 
 function runOptions() {
   return {
-    jobProfileId: $("jobProfileId").value,
+    jobId: $("jobId").value,
     dailyTarget: Number($("dailyTargetNumber").value),
-    scoreThreshold: Number($("scoreThreshold").value),
     batchSize: Number($("batchSize").value),
     batchIntervalMinutes: Number($("batchIntervalMinutes").value),
     mode: document.querySelector('input[name="mode"]:checked').value,
@@ -53,22 +52,12 @@ function runOptions() {
 
 async function health() {
   try {
-    const result = await request("/api/health");
-    $("serviceBadge").textContent = result.llmConfigured ? "服务正常 · LLM 已配置" : "服务正常 · 未配置 LLM";
-    $("serviceBadge").className = `badge ${result.llmConfigured ? "ok" : "warn"}`;
+    await request("/api/health");
+    $("serviceBadge").textContent = "服务正常 · 无评分模式";
+    $("serviceBadge").className = "badge ok";
   } catch {
     $("serviceBadge").textContent = "服务异常";
     $("serviceBadge").className = "badge bad";
-  }
-}
-
-async function loadProfile() {
-  try {
-    const result = await request("/api/job-profile/ai-app-intern");
-    $("profileView").textContent = JSON.stringify(result.profile, null, 2);
-    $("scoreThreshold").value = result.profile.score_threshold_default || 70;
-  } catch (error) {
-    $("profileView").textContent = error.message;
   }
 }
 
@@ -97,7 +86,7 @@ $("batchSize").addEventListener("change", (event) => {
 
 $("preflightBtn").addEventListener("click", async () => {
   try {
-    const result = await request(`/api/preflight?jobProfileId=${encodeURIComponent($("jobProfileId").value)}`);
+    const result = await request("/api/preflight");
     $("detailTitle").textContent = "运行前检查";
     $("details").textContent = JSON.stringify(result, null, 2);
     notice(result.ok ? "运行前检查通过" : `检查未通过：${result.errors.join("；")}`, result.ok ? "ok" : "bad");
@@ -127,7 +116,6 @@ $("pauseBtn").addEventListener("click", async () => {
 });
 
 $("statusBtn").addEventListener("click", () => loadState());
-$("loadProfileBtn").addEventListener("click", loadProfile);
 $("reportBtn").addEventListener("click", async () => {
   try {
     const report = await request("/api/runs/report/today");
@@ -137,15 +125,4 @@ $("reportBtn").addEventListener("click", async () => {
   } catch (error) { notice(error.message, "bad"); }
 });
 
-$("generateBtn").addEventListener("click", async () => {
-  const jd = $("jd").value.trim();
-  if (!jd) return notice("请先输入 JD", "bad");
-  try {
-    notice("正在生成岗位画像...");
-    const result = await request("/api/job-profile/ai-app-intern/generate", { method: "POST", body: JSON.stringify({ jd }) });
-    $("profileView").textContent = JSON.stringify(result.profile, null, 2);
-    notice("岗位画像已生成并保存", "ok");
-  } catch (error) { notice(`生成失败：${error.message}`, "bad"); }
-});
-
-await Promise.all([health(), loadProfile(), loadState(true)]);
+await Promise.all([health(), loadState(true)]);
