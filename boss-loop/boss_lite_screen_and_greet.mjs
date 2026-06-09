@@ -17,7 +17,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (!arg.startsWith('--')) continue;
     const key = arg.slice(2);
-    if (key === 'self-check' || key === 'dry-run' || key === 'skip-recommend') {
+    if (key === 'self-check' || key === 'dry-run' || key === 'skip-recommend' || key === 'skip-chat') {
       out[key] = true;
     } else {
       out[key] = argv[++i];
@@ -63,8 +63,8 @@ function loadConfig() {
     job_profile_cache_enabled: readYamlScalar(configFile, 'job_profile_cache_enabled') !== 'false',
     lock_ttl_minutes: readYamlNumber(configFile, 'lock_ttl_minutes', 30),
     state_flush_batch_size: readYamlNumber(configFile, 'state_flush_batch_size', 5),
-    max_greet_per_run: readYamlNumber(configFile, 'max_greet_per_run', 20),
-    max_scan_per_run: readYamlNumber(configFile, 'max_scan_per_run', 80),
+    max_greet_per_run: Math.max(1, Number(args['max-greet-per-run'] || readYamlNumber(configFile, 'max_greet_per_run', 20))),
+    max_scan_per_run: Math.max(1, Number(args['max-scan-per-run'] || readYamlNumber(configFile, 'max_scan_per_run', 80))),
     max_detail_reads_per_run: readYamlNumber(configFile, 'max_detail_reads_per_run', 40),
     fast_max_detail_reads_per_run: readYamlNumber(configFile, 'fast_max_detail_reads_per_run', 20),
     max_list_scroll_rounds: readYamlNumber(configFile, 'max_list_scroll_rounds', 4),
@@ -89,6 +89,7 @@ function loadConfig() {
     dryRun: !!args['dry-run'],
     selfCheck: !!args['self-check'],
     skipRecommend: !!args['skip-recommend'],
+    skipChat: !!args['skip-chat'],
     runId: args['run-id'] || `sg-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
   };
 
@@ -496,7 +497,7 @@ async function processRecommended() {
   const attempted = new Set();
   let scrollRounds = 0;
 
-  while (counters.scanned < CFG.max_scan_per_run) {
+  while (counters.scanned < CFG.max_scan_per_run && counters.greeted < CFG.max_greet_per_run) {
     const data = await readRecommendCards();
     if (data.captcha) throw new Error('paused_captcha_detected');
     if (data.login) throw new Error('paused_login_required');
@@ -1215,6 +1216,8 @@ async function main() {
       mode: CFG.mode,
       dry_run: CFG.dryRun,
       skip_recommend: CFG.skipRecommend,
+      skip_chat: CFG.skipChat,
+      max_greet_per_run: CFG.max_greet_per_run,
       proxy: CFG.proxy,
     }));
     return;
@@ -1239,8 +1242,12 @@ async function main() {
       appendLog({ source: 'recommended_feed', action: 'recommended_stage_skip', result: 'user_requested_chat_only' });
     }
 
-    await bindTarget();
-    await processInbound();
+    if (!CFG.skipChat) {
+      await bindTarget();
+      await processInbound();
+    } else {
+      appendLog({ source: 'inbound_chat', action: 'chat_stage_skip', result: 'user_requested_recommend_only' });
+    }
     flushState(true);
     appendLog({ action: 'run_end', result: 'ok' });
   } catch (e) {
@@ -1258,7 +1265,7 @@ async function main() {
     mode: CFG.mode,
     ...counters,
     paused_reason: pausedReason,
-    next: pausedReason ? 'screen-and-greet' : 'collect-resumes',
+    next: pausedReason ? 'screen-and-greet' : (CFG.skipChat ? 'done' : 'collect-resumes'),
     run_id: CFG.runId,
   }));
 }
