@@ -14,6 +14,7 @@ const CURRENT_FILE = path.join(RUN_DIR, "current-run.json");
 const RUN_LOCK_DIR = path.join(RUN_DIR, "recommend-greet.lock");
 const OLD_STATE_FILE = path.join(DATA_DIR, "briefs/boss-auto-lightweight-loop-state.json");
 const OLD_LOCK_DIR = path.join(DATA_DIR, "briefs/boss-auto.lockdir");
+const DIRECT_CONTACTED_FILE = path.join(DATA_DIR, "briefs/boss-direct-greet-contacted.jsonl");
 const PROXY = (process.env.CDP_PROXY_URL || "http://127.0.0.1:3456").replace(/\/$/, "");
 const MAX_CONSECUTIVE_FAILURES = Math.max(1, Number(process.env.BOSS_MAX_CONSECUTIVE_FAILURES || 3));
 const GREET_DELAY_MIN_MS = Math.max(1000, Number(process.env.BOSS_GREET_DELAY_MIN_MS || 3000));
@@ -85,21 +86,31 @@ function acquireRunLock() {
   ensureDirs();
   const existing = lockInfo(RUN_LOCK_DIR);
   if (existing.exists && !existing.active) fs.rmSync(RUN_LOCK_DIR, { recursive: true, force: true });
+  const legacy = lockInfo(OLD_LOCK_DIR);
+  if (legacy.exists && !legacy.active) fs.rmSync(OLD_LOCK_DIR, { recursive: true, force: true });
   try {
     fs.mkdirSync(RUN_LOCK_DIR);
-    fs.writeFileSync(path.join(RUN_LOCK_DIR, "meta.json"), JSON.stringify({
+    const meta = {
       pid: process.pid,
       mode: "recommend-greet",
       started_at: now(),
       host: os.hostname(),
-    }, null, 2));
+    };
+    fs.writeFileSync(path.join(RUN_LOCK_DIR, "meta.json"), JSON.stringify(meta, null, 2));
+    fs.mkdirSync(OLD_LOCK_DIR);
+    fs.writeFileSync(path.join(OLD_LOCK_DIR, "meta.json"), JSON.stringify(meta, null, 2));
   } catch {
+    releaseRunLock();
     throw new Error("run_lock_exists");
   }
 }
 
 function releaseRunLock() {
-  try { fs.rmSync(RUN_LOCK_DIR, { recursive: true, force: true }); } catch {}
+  for (const directory of [RUN_LOCK_DIR, OLD_LOCK_DIR]) {
+    const info = lockInfo(directory);
+    if (info.pid !== process.pid) continue;
+    try { fs.rmSync(directory, { recursive: true, force: true }); } catch {}
+  }
 }
 
 function readJsonl(file) {
@@ -313,6 +324,17 @@ function alreadyProcessedIds() {
     .map((item) => item.candidate_id));
 }
 
+function rememberDirectContact(candidate, legacyId) {
+  appendJsonl(DIRECT_CONTACTED_FILE, {
+    timestamp: now(),
+    candidate_id: candidate.candidate_id,
+    legacy_id: legacyId,
+    candidate_name: candidate.name,
+    candidate_school: candidate.school,
+    source: "dashboard_recommend",
+  });
+}
+
 function throwIfStopped() {
   if (pauseRequested) throw new Error("paused_by_user");
 }
@@ -431,6 +453,7 @@ async function runBatch(targetId, batch) {
       if (!confirmation.ok) throw new Error("greet_no_state_change");
       activeTask.processed.add(id);
       activeTask.processed.add(legacyId);
+      rememberDirectContact(candidate, legacyId);
       increment({ greeted: 1 });
       batchPassed += 1;
       logDecision(candidate, "greeted");

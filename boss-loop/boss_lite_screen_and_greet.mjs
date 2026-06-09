@@ -53,6 +53,7 @@ function loadConfig() {
     proxy: (args.proxy || readYamlScalar(configFile, 'proxy_url') || 'http://127.0.0.1:3456').replace(/\/$/, ''),
     state_file: args['state-file'] || readYamlScalar(configFile, 'state_file') || path.resolve(__dirname, '../data/briefs/boss-auto-lightweight-loop-state.json'),
     contacted_boss_ids_file: args['contacted-boss-ids-file'] || readYamlScalar(configFile, 'contacted_boss_ids_file') || path.resolve(__dirname, '../data/briefs/boss-auto-contacted-ids.jsonl'),
+    direct_greet_contacted_file: args['direct-greet-contacted-file'] || path.resolve(__dirname, '../data/briefs/boss-direct-greet-contacted.jsonl'),
     run_log_jsonl_file: args['log-file'] || readYamlScalar(configFile, 'run_log_jsonl_file') || path.resolve(__dirname, '../data/briefs/boss-auto-lightweight-loop-run.jsonl'),
     lock_dir: args['lock-dir'] || readYamlScalar(configFile, 'lock_dir') || path.resolve(__dirname, '../data/briefs/boss-auto.lockdir'),
     run_dir: args['run-dir'] || readYamlScalar(configFile, 'run_log_dir') || path.resolve(__dirname, '../data/briefs'),
@@ -105,6 +106,7 @@ let browserContextId = null;
 let stateRoot = null;
 let rootWasArray = false;
 let contactedBossIds = new Set();
+let directGreetContactedIds = new Set();
 let dirty = new Map();
 let haveLock = false;
 let pausedReason = null;
@@ -240,6 +242,18 @@ function loadContactedBossIds() {
       const bossId = normalizeBossId(line);
       if (bossId) contactedBossIds.add(bossId);
     }
+  }
+}
+
+function loadDirectGreetContactedIds() {
+  directGreetContactedIds = new Set();
+  if (!fs.existsSync(CFG.direct_greet_contacted_file)) return;
+  for (const line of fs.readFileSync(CFG.direct_greet_contacted_file, 'utf8').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const record = JSON.parse(line);
+      if (record?.legacy_id) directGreetContactedIds.add(String(record.legacy_id));
+    } catch {}
   }
 }
 
@@ -495,7 +509,8 @@ async function processRecommended() {
     const card = (data.cards || []).find(c => {
       const id = candidateId(c.name, c.school, `recommended_${c.idx}`);
       const existing = getCandidate(id);
-      return c.name && !invalidCandidateName(c.name) && !attempted.has(id) && !(existing && sentStates.has(existing.status));
+      return c.name && !invalidCandidateName(c.name) && !attempted.has(id) &&
+        !directGreetContactedIds.has(id) && !(existing && sentStates.has(existing.status));
     });
 
     if (!card) {
@@ -1212,6 +1227,7 @@ async function main() {
 
   loadState();
   loadContactedBossIds();
+  loadDirectGreetContactedIds();
 
   try {
     await bindTarget();
