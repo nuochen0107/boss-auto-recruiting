@@ -57,6 +57,8 @@ fieldset { display: flex; gap: 26px; margin: 0; padding: 15px; border: 1px solid
 .radio input { width: auto; margin: 0; }
 .radio.danger { color: var(--red); }
 .actions { flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.pipeline-summary { display: flex; flex-wrap: wrap; gap: 12px 28px; margin-top: 18px; color: var(--muted); }
+.pipeline-summary strong { color: var(--ink); }
 .button { padding: 10px 16px; border: 1px solid transparent; border-radius: 9px; font-weight: 800; cursor: pointer; }
 .button.primary { color: white; background: var(--green); }
 .button.primary:hover { background: var(--green-dark); }

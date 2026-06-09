@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
 let pollTimer = null;
+let pipelinePollTimer = null;
 
 async function request(url, options = {}) {
   const response = await fetch(url, { headers: { "content-type": "application/json", ...(options.headers || {}) }, ...options });
@@ -15,6 +16,11 @@ async function request(url, options = {}) {
 function notice(message, type = "") {
   $("notice").textContent = message;
   $("notice").className = `notice ${type}`;
+}
+
+function pipelineNotice(message, type = "") {
+  $("pipelineNotice").textContent = message;
+  $("pipelineNotice").className = `notice ${type}`;
 }
 
 function syncTarget(value) {
@@ -38,6 +44,17 @@ function renderState(state) {
   $("detailTitle").textContent = state.error ? `运行详情 · ${state.error}` : "运行详情";
   if (["running", "starting", "waiting", "pausing"].includes(state.status)) startPolling();
   else stopPolling();
+}
+
+function renderPipeline(state) {
+  const stages = state.stages || [];
+  const completed = stages.filter((stage) => stage.status === "completed").length;
+  $("pipelineStatus").textContent = state.status || "idle";
+  $("pipelineStage").textContent = state.current_stage_label || "-";
+  $("pipelineProgress").textContent = `${completed} / ${stages.length}`;
+  $("pipelineDetails").textContent = JSON.stringify(state, null, 2);
+  if (["running", "starting", "pausing"].includes(state.status)) startPipelinePolling();
+  else stopPipelinePolling();
 }
 
 function runOptions() {
@@ -70,12 +87,30 @@ async function loadState(silent = false) {
   }
 }
 
+async function loadPipelineState(silent = false) {
+  try {
+    renderPipeline(await request("/api/pipeline/current"));
+    if (!silent) pipelineNotice("旧链路状态已刷新", "ok");
+  } catch (error) {
+    if (!silent) pipelineNotice(error.message, "bad");
+  }
+}
+
 function startPolling() {
   if (!pollTimer) pollTimer = setInterval(() => loadState(true), 1500);
 }
 function stopPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
+}
+
+function startPipelinePolling() {
+  if (!pipelinePollTimer) pipelinePollTimer = setInterval(() => loadPipelineState(true), 1500);
+}
+
+function stopPipelinePolling() {
+  if (pipelinePollTimer) clearInterval(pipelinePollTimer);
+  pipelinePollTimer = null;
 }
 
 $("dailyTarget").addEventListener("input", (event) => syncTarget(event.target.value));
@@ -125,4 +160,46 @@ $("reportBtn").addEventListener("click", async () => {
   } catch (error) { notice(error.message, "bad"); }
 });
 
-await Promise.all([health(), loadState(true)]);
+for (const button of document.querySelectorAll(".pipeline-start")) {
+  button.addEventListener("click", async () => {
+    const type = button.dataset.pipeline;
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    const labels = {
+      chat: "处理沟通页并发送求简历消息",
+      collect: "收取候选人简历附件",
+      sync: "同步到飞书招聘",
+      full: "运行推荐、沟通、收简历和飞书同步完整链路",
+    };
+    if (mode === "real-run" && !window.confirm(`${labels[type]}将执行真实操作。确认开始？`)) return;
+    try {
+      pipelineNotice(`正在启动：${labels[type]}...`);
+      const state = await request("/api/pipeline/start", {
+        method: "POST",
+        body: JSON.stringify({
+          type,
+          mode,
+          dailyTarget: Number($("dailyTargetNumber").value),
+        }),
+      });
+      renderPipeline(state);
+      pipelineNotice("旧链路任务已启动", "ok");
+    } catch (error) {
+      $("pipelineDetails").textContent = JSON.stringify(error.payload || { error: error.message }, null, 2);
+      pipelineNotice(`启动失败：${error.message}`, "bad");
+    }
+  });
+}
+
+$("pipelinePauseBtn").addEventListener("click", async () => {
+  try {
+    const result = await request("/api/pipeline/pause", { method: "POST", body: "{}" });
+    renderPipeline(result.state || {});
+    pipelineNotice(result.paused ? "旧链路暂停请求已提交" : "当前没有旧链路任务", result.paused ? "ok" : "");
+  } catch (error) {
+    pipelineNotice(error.message, "bad");
+  }
+});
+
+$("pipelineStatusBtn").addEventListener("click", () => loadPipelineState());
+
+await Promise.all([health(), loadState(true), loadPipelineState(true)]);

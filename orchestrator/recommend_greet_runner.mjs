@@ -12,6 +12,7 @@ const RUN_DIR = path.join(DATA_DIR, "runs");
 const CANDIDATE_DIR = path.join(DATA_DIR, "candidates");
 const CURRENT_FILE = path.join(RUN_DIR, "current-run.json");
 const RUN_LOCK_DIR = path.join(RUN_DIR, "recommend-greet.lock");
+const PIPELINE_LOCK_DIR = path.join(RUN_DIR, "legacy-pipeline.lock");
 const OLD_STATE_FILE = path.join(DATA_DIR, "briefs/boss-auto-lightweight-loop-state.json");
 const OLD_LOCK_DIR = path.join(DATA_DIR, "briefs/boss-auto.lockdir");
 const DIRECT_CONTACTED_FILE = path.join(DATA_DIR, "briefs/boss-direct-greet-contacted.jsonl");
@@ -532,9 +533,12 @@ export async function preflight({ ignoreActiveTask = false } = {}) {
   };
   add("no_active_run", ignoreActiveTask || !activeTask, ignoreActiveTask || !activeTask ? "当前无运行中任务" : "run_already_active");
   const runnerLock = lockInfo(RUN_LOCK_DIR);
+  const pipelineLock = lockInfo(PIPELINE_LOCK_DIR);
   const legacyLock = lockInfo(OLD_LOCK_DIR);
   add("runner_lock", ignoreActiveTask || !runnerLock.active || runnerLock.pid === process.pid,
     !runnerLock.active || runnerLock.pid === process.pid ? "推荐任务锁可用" : `run_lock_exists:${runnerLock.pid}`);
+  add("legacy_pipeline_lock", !pipelineLock.active,
+    !pipelineLock.active ? "旧链路任务锁可用" : `legacy_pipeline_active:${pipelineLock.pid}`);
   add("legacy_boss_lock", !legacyLock.active,
     !legacyLock.active ? "旧 Boss 自动化未运行" : `legacy_boss_run_active:${legacyLock.pid}`);
   try {

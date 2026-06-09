@@ -4,6 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getCurrentRun, getTodayReport, pauseRun, preflight, startRun } from "../orchestrator/recommend_greet_runner.mjs";
+import { getLegacyRun, pauseLegacyRun, startLegacyRun } from "../orchestrator/legacy_pipeline_runner.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(DIR, "public");
@@ -43,6 +44,9 @@ async function api(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/runs/pause") return sendJson(res, pauseRun());
   if (req.method === "GET" && url.pathname === "/api/runs/current") return sendJson(res, getCurrentRun());
   if (req.method === "GET" && url.pathname === "/api/runs/report/today") return sendJson(res, getTodayReport());
+  if (req.method === "POST" && url.pathname === "/api/pipeline/start") return sendJson(res, startLegacyRun(await body(req)), 202);
+  if (req.method === "POST" && url.pathname === "/api/pipeline/pause") return sendJson(res, pauseLegacyRun());
+  if (req.method === "GET" && url.pathname === "/api/pipeline/current") return sendJson(res, getLegacyRun());
   return sendJson(res, { error: "not_found" }, 404);
 }
 

@@ -12,14 +12,14 @@
       <div>
         <p class="eyebrow">LOCAL RECRUITING CONSOLE</p>
         <h1>Boss 招聘控制面板</h1>
-        <p class="subtitle">AI应用实习生 · 推荐牛人批量触达</p>
+        <p class="subtitle">AI应用实习生 · 推荐触达、沟通、收简历与飞书同步</p>
       </div>
       <div id="serviceBadge" class="badge neutral">服务检查中</div>
     </header>
 
     <section class="panel">
       <div class="section-title">
-        <div><p class="eyebrow">TASK SETUP</p><h2>任务参数</h2></div>
+        <div><p class="eyebrow">RECOMMEND TASK</p><h2>推荐牛人页打招呼</h2></div>
         <button id="preflightBtn" class="button secondary">运行前检查</button>
       </div>
       <div class="form-grid">
@@ -65,8 +65,37 @@
     </section>
 
     <section class="panel">
-      <div class="section-title compact"><div><p class="eyebrow">DETAILS</p><h2 id="detailTitle">运行详情</h2></div></div>
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">LEGACY PIPELINE</p>
+          <h2>沟通、收简历与飞书同步</h2>
+        </div>
+        <button id="pipelineStatusBtn" class="button secondary">刷新旧链路状态</button>
+      </div>
+      <p class="subtitle">复用原有脚本。运行模式沿用上方 dry-run / real-run；完整链路严格串行，任一步失败即停止。</p>
+      <div class="actions">
+        <button class="button secondary pipeline-start" data-pipeline="chat">1. 处理沟通页并求简历</button>
+        <button class="button secondary pipeline-start" data-pipeline="collect">2. 收取简历附件</button>
+        <button class="button secondary pipeline-start" data-pipeline="sync">3. 同步飞书招聘</button>
+        <button class="button primary pipeline-start" data-pipeline="full">运行完整旧链路</button>
+        <button id="pipelinePauseBtn" class="button danger-button">暂停旧链路</button>
+      </div>
+      <div id="pipelineNotice" class="notice">旧链路等待操作</div>
+      <div class="pipeline-summary">
+        <span>状态：<strong id="pipelineStatus">idle</strong></span>
+        <span>当前阶段：<strong id="pipelineStage">-</strong></span>
+        <span>进度：<strong id="pipelineProgress">0 / 0</strong></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title compact"><div><p class="eyebrow">RECOMMEND DETAILS</p><h2 id="detailTitle">推荐任务详情</h2></div></div>
       <pre id="details">暂无数据</pre>
+    </section>
+
+    <section class="panel">
+      <div class="section-title compact"><div><p class="eyebrow">PIPELINE DETAILS</p><h2>旧链路详情</h2></div></div>
+      <pre id="pipelineDetails">暂无数据</pre>
     </section>
   </main>
   <script type="module" src="/app.js"></script>
