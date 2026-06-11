@@ -563,7 +563,7 @@ function ensurePreviewOpen(cdp, options) {
     if (!closed.ok) return { ok: false, reason: 'stale_preview_close_failed', state: stale, close: closed };
     sleepMs(500);
   }
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 10; i++) {
     const state = readPreviewState();
     if (state.hasPreviewLayer) {
       const closed = closeOpenPreviews(cdp, options);
@@ -571,7 +571,11 @@ function ensurePreviewOpen(cdp, options) {
       sleepMs(500);
       continue;
     }
-    if (!state.hasPreviewButton) return { ok: false, reason: 'preview_button_not_found_after_accept', state };
+    if (!state.hasPreviewButton) {
+      scrollConversationToBottom(cdp);
+      sleepMs(700);
+      continue;
+    }
     scrollConversationToBottom(cdp);
     sleepMs(250);
     const preview = clickPreview(cdp);
@@ -637,18 +641,44 @@ function clickDownloadInPreview(cdp) {
         const r = el.getBoundingClientRect();
         const text = (el.innerText || el.textContent || '').trim();
         const cls = String(el.className || '');
+        const exactLabel = text === '下载' ||
+          /^(下载|download)$/i.test(String(el.getAttribute?.('title') || el.getAttribute?.('aria-label') || '').trim());
+        const downloadClass = /(?:^|[\\s_-])(download|down-load)(?:$|[\\s_-])/i.test(cls);
+        const compactControl = r.width <= 120 && r.height <= 80;
+        const containsMorePreciseControl = [...el.querySelectorAll?.(
+          'button,a,[role="button"],[title],[aria-label],[class*="download"],[class*="Download"]'
+        ) || []].some(child => {
+          const cr = child.getBoundingClientRect?.();
+          if (!cr || cr.width <= 0 || cr.height <= 0 || cr.width > 120 || cr.height > 80) return false;
+          const childText = (child.innerText || child.textContent || '').trim();
+          const childLabel = [
+            child.getAttribute?.('title'),
+            child.getAttribute?.('aria-label'),
+            child.className,
+          ].filter(Boolean).join(' ');
+          return childText === '下载' || /download|down-load/i.test(childLabel);
+        });
+        if (!compactControl || containsMorePreciseControl || (!exactLabel && !downloadClass)) return null;
         const score =
           (text === '下载' ? 0 : 20) +
           (/icon-content|download|toolbar|attachment-resume-btns/i.test(cls) ? 0 : 10) +
           (inActivePreview(el) ? 0 : 30) +
-          (r.width <= 80 && r.height <= 60 ? 0 : 80) +
+          (r.width <= 80 && r.height <= 60 ? 0 : 20) +
           (r.y <= 80 ? 0 : 10) +
           (r.width * r.height) / 10000;
         return { el, r, text, score };
       })
+      .filter(Boolean)
       .sort((a, b) => a.score - b.score);
     const btn = candidates[0]?.el;
-    if (!btn) return { ok: false, reason: 'no_download_button', previewText, candidates: all.filter(visible).slice(0, 30).map(el => label(el).slice(0, 80)) };
+    if (!btn) {
+      return {
+        ok: false,
+        reason: /正在加载简历|请稍等/.test(previewText) ? 'download_button_not_ready' : 'no_download_button',
+        previewText,
+        candidates: all.filter(visible).slice(0, 30).map(el => label(el).slice(0, 80))
+      };
+    }
     btn.setAttribute('data-boss-auto-action', 'download-resume');
     btn.setAttribute('data-boss-auto-download-id', actionId);
     const r = btn.getBoundingClientRect();
@@ -676,12 +706,12 @@ function setDownloadDir(proxy, target, dir) {
     if (!browserContextId) return { ok: false, reason: "no_browser_context_id" };
     const body = JSON.stringify({ method: "Browser.setDownloadBehavior", params: { behavior: "allow", downloadPath: dir, browserContextId } });
     requestJson("POST", `${proxy}/cdp?target=${target}`, body);
-    return { ok: true };
+    return { ok: true, method: "Browser.setDownloadBehavior" };
   } catch (e) {
     try {
       const body2 = JSON.stringify({ method: "Page.setDownloadBehavior", params: { behavior: "allow", downloadPath: dir } });
       requestJson("POST", `${proxy}/cdp?target=${target}`, body2);
-      return { ok: true };
+      return { ok: true, method: "Page.setDownloadBehavior" };
     } catch (e2) {
       return { ok: false, reason: "cdp_set_download_behavior_failed" };
     }
@@ -809,6 +839,22 @@ function confirmReplyAlreadySent(cdp, options) {
   })()`);
 }
 
+function ensureChatPage(cdp) {
+  let health = pageHealth(cdp);
+  if (health.loginExpired || health.captcha || health.hasChatList) return health;
+
+  try {
+    cdp.navigate("https://www.zhipin.com/web/chat/index");
+  } catch (_) {}
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    sleepMs(1200);
+    health = pageHealth(cdp);
+    if (health.loginExpired || health.captcha || health.hasChatList) break;
+  }
+  return health;
+}
+
 function main() {
   const options = loadOptions();
   if (options.selfCheck) {
@@ -855,10 +901,21 @@ function _main(options) {
   }
 
   const cdp = makeClient({ proxy: options.proxy, target: options.target });
-  const health = pageHealth(cdp);
+  const health = ensureChatPage(cdp);
   if (health.loginExpired || health.captcha || !health.hasChatList) {
-    const reason = health.captcha ? "paused_captcha_detected" : "paused_login_required";
-    console.log(JSON.stringify({ status: "paused", reason, mode: MODE, target: cdp.target }));
+    const reason = health.captcha
+      ? "paused_captcha_detected"
+      : health.loginExpired
+        ? "paused_login_required"
+        : "paused_chat_page_unavailable";
+    console.log(JSON.stringify({
+      status: "paused",
+      reason,
+      mode: MODE,
+      target: cdp.target,
+      url: health.url || "",
+      title: health.title || "",
+    }));
     return;
   }
 
@@ -884,6 +941,7 @@ function _main(options) {
   let batch = [];
   let lastDuplicateOtherHash = "";
   let consecutiveDuplicateOtherHash = 0;
+  let consecutiveDownloadFailures = 0;
 
   for (const target of targets) {
     if (pausedReason) break;
@@ -1047,16 +1105,33 @@ function _main(options) {
     if (!previewOpen.ok) {
       candidates[target.id] = { ...c, status: "download_failed", last_observation: previewOpen.reason, last_error: previewOpen.reason };
       failed++;
+      consecutiveDownloadFailures++;
       appendLog(options.logFile, options.runId, MODE, { candidate_id: target.id, action: "open_preview", result: "failed", error_code: previewOpen.reason, detail: previewOpen });
+      saveState(options.stateFile, state, options.jobName);
+      if (consecutiveDownloadFailures >= 2) {
+        pausedReason = "paused_consecutive_download_failures";
+        break;
+      }
       continue;
     }
 
-    const dlBtn = clickDownloadInPreview(cdp);
+    let dlBtn = null;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      dlBtn = clickDownloadInPreview(cdp);
+      if (dlBtn.ok || dlBtn.reason !== "download_button_not_ready") break;
+      sleepMs(250);
+    }
     if (!dlBtn.ok) {
       closePreview(cdp);
       candidates[target.id] = { ...c, status: "download_failed", last_observation: "download_button_not_found", last_error: "download_button_not_found" };
       failed++;
+      consecutiveDownloadFailures++;
       appendLog(options.logFile, options.runId, MODE, { candidate_id: target.id, action: "download", result: "failed", error_code: "download_button_not_found", detail: dlBtn });
+      saveState(options.stateFile, state, options.jobName);
+      if (consecutiveDownloadFailures >= 2) {
+        pausedReason = "paused_consecutive_download_failures";
+        break;
+      }
       continue;
     }
 
@@ -1072,7 +1147,13 @@ function _main(options) {
       closePreview(cdp);
       candidates[target.id] = { ...c, status: "download_failed", last_observation: dlResult.reason, last_error: dlResult.reason };
       failed++;
+      consecutiveDownloadFailures++;
       appendLog(options.logFile, options.runId, MODE, { candidate_id: target.id, action: "download", result: "failed", error_code: dlResult.reason });
+      saveState(options.stateFile, state, options.jobName);
+      if (consecutiveDownloadFailures >= 2) {
+        pausedReason = "paused_consecutive_download_failures";
+        break;
+      }
       continue;
     }
 
@@ -1155,6 +1236,7 @@ function _main(options) {
       continue;
     }
     downloaded++;
+    consecutiveDownloadFailures = 0;
     candidates[target.id] = {
       ...c,
       status: "resume_downloaded",

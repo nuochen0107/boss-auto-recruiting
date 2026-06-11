@@ -8,12 +8,15 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
+const dataRoot = path.resolve(process.env.BOSS_DATA_ROOT || path.join(projectRoot, "data"));
+const configRoot = process.env.BOSS_CONFIG_ROOT ? path.resolve(process.env.BOSS_CONFIG_ROOT) : "";
 const upstream = path.join(__dirname, "uploader/upload-resumes.mjs");
-const envFile = path.join(__dirname, "uploader/.env.local");
-const bossConfigFile = path.join(projectRoot, "boss-loop/assets/default-config.yaml");
-const defaultResumeDir = path.join(projectRoot, "data/resumes");
-const defaultManifestFile = path.join(projectRoot, "data/briefs/boss-auto-lightweight-loop-state.json");
-const defaultStateFile = path.join(projectRoot, "data/briefs/feishu-hire-sync-state.json");
+const envFile = process.env.FEISHU_ENV_FILE ||
+  (configRoot ? path.join(configRoot, "feishu.env") : path.join(__dirname, "uploader/.env.local"));
+const bossConfigFile = process.env.BOSS_CONFIG_FILE || path.join(projectRoot, "boss-loop/assets/default-config.yaml");
+const defaultResumeDir = path.join(dataRoot, "resumes");
+const defaultManifestFile = path.join(dataRoot, "briefs/boss-auto-lightweight-loop-state.json");
+const defaultStateFile = path.join(dataRoot, "briefs/feishu-hire-sync-state.json");
 const argv = process.argv.slice(2);
 
 function parseEnvFile(filePath) {
@@ -174,14 +177,16 @@ const env = {
   FEISHU_HIRE_UPLOAD_STATE:
     baseEnv.FEISHU_HIRE_SYNC_STATE_FILE ||
     baseEnv.FEISHU_HIRE_SYNC_STATE ||
+    baseEnv.FEISHU_HIRE_UPLOAD_STATE ||
     defaultStateFile,
   FEISHU_HIRE_SYNC_STATE:
     baseEnv.FEISHU_HIRE_SYNC_STATE_FILE ||
     baseEnv.FEISHU_HIRE_SYNC_STATE ||
+    baseEnv.FEISHU_HIRE_UPLOAD_STATE ||
     defaultStateFile,
 };
 
-const result = spawnSync("node", [upstream, ...argv], {
+const result = spawnSync(process.execPath, [upstream, ...argv], {
   env,
   stdio: "inherit",
 });

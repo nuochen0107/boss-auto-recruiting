@@ -6,11 +6,12 @@ import { fileURLToPath } from "node:url";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, "..");
-const RUN_DIR = path.join(ROOT, "data/runs");
+const DATA_ROOT = path.resolve(process.env.BOSS_DATA_ROOT || path.join(ROOT, "data"));
+const RUN_DIR = path.join(DATA_ROOT, "runs");
 const CURRENT_FILE = path.join(RUN_DIR, "current-pipeline.json");
 const PIPELINE_LOCK_DIR = path.join(RUN_DIR, "legacy-pipeline.lock");
 const RECOMMEND_LOCK_DIR = path.join(RUN_DIR, "recommend-greet.lock");
-const LEGACY_BOSS_LOCK_DIR = path.join(ROOT, "data/briefs/boss-auto.lockdir");
+const LEGACY_BOSS_LOCK_DIR = path.join(DATA_ROOT, "briefs/boss-auto.lockdir");
 const JOB_NAME = "AI应用实习生";
 const MAX_OUTPUT_LINES = 120;
 
@@ -98,17 +99,38 @@ function normalizeOptions(input = {}) {
   const type = ["chat", "collect", "sync", "full"].includes(input.type) ? input.type : "chat";
   const mode = input.mode === "real-run" ? "real-run" : "dry-run";
   const dailyTarget = Math.max(1, Math.min(200, Number(input.dailyTarget) || 20));
-  return { type, mode, dailyTarget, jobName: JOB_NAME };
+  const chatLimit = Math.max(1, Math.min(200, Number(input.chatLimit) || 20));
+  const collectLimit = Math.max(1, Math.min(200, Number(input.collectLimit) || 50));
+  const feishuJobId = String(input.feishuJobId || "").trim();
+  const syncLimit = Math.max(1, Math.min(50, Number(input.syncLimit) || 1));
+  if (["sync", "full"].includes(type) && !/^\d+$/.test(feishuJobId)) {
+    const error = new Error("invalid_feishu_job_id");
+    error.statusCode = 422;
+    throw error;
+  }
+  return { type, mode, dailyTarget, chatLimit, collectLimit, jobName: JOB_NAME, feishuJobId, syncLimit };
 }
 
 function stagesFor(options) {
   const dry = options.mode === "dry-run";
-  const bossArgs = ["--job-name", options.jobName];
-  const collectArgs = ["--job-name", options.jobName];
+  const bossArgs = [
+    "--job-name", options.jobName,
+    "--max-greet-per-run", String(options.chatLimit),
+  ];
+  const collectArgs = [
+    "--job-name", options.jobName,
+    "--max-collect-per-run", String(options.collectLimit),
+  ];
   if (dry) {
     bossArgs.push("--dry-run");
     collectArgs.push("--dry-run");
   }
+  const syncArgs = [dry ? "--dry-run" : "--apply", "--limit", String(options.syncLimit)];
+  const syncEnv = {
+    FEISHU_HIRE_UPLOAD_MODE: "talent_application",
+    FEISHU_HIRE_JOB_ID: options.feishuJobId,
+    FEISHU_HIRE_UPLOAD_STATE: path.join(RUN_DIR, `feishu-hire-job-${options.feishuJobId}-state.json`),
+  };
 
   if (options.type === "chat") {
     return [{ key: "chat", label: "沟通页求简历", script: SCRIPTS.boss, args: [...bossArgs, "--skip-recommend"] }];
@@ -117,17 +139,17 @@ function stagesFor(options) {
     return [{ key: "collect", label: "收取简历附件", script: SCRIPTS.collect, args: collectArgs }];
   }
   if (options.type === "sync") {
-    return [{ key: "sync", label: "同步飞书招聘", script: SCRIPTS.sync, args: dry ? [] : ["--apply"] }];
+    return [{ key: "sync", label: "同步飞书招聘岗位", script: SCRIPTS.sync, args: syncArgs, env: syncEnv }];
   }
   return [
     {
-      key: "screen_and_greet",
-      label: "推荐页打招呼与沟通页求简历",
+      key: "chat",
+      label: "处理沟通页并索要简历",
       script: SCRIPTS.boss,
-      args: [...bossArgs, "--max-greet-per-run", String(options.dailyTarget)],
+      args: [...bossArgs, "--skip-recommend"],
     },
     { key: "collect", label: "收取简历附件", script: SCRIPTS.collect, args: collectArgs },
-    { key: "sync", label: "同步飞书招聘", script: SCRIPTS.sync, args: dry ? [] : ["--apply"] },
+    { key: "sync", label: "同步飞书招聘岗位", script: SCRIPTS.sync, args: syncArgs, env: syncEnv },
   ];
 }
 
@@ -154,7 +176,7 @@ function runStage(stage) {
 
     const child = spawn(process.execPath, [stage.script, ...stage.args], {
       cwd: ROOT,
-      env: process.env,
+      env: { ...process.env, ...(stage.env || {}) },
       stdio: ["ignore", "pipe", "pipe"],
     });
     activeChild = child;
@@ -173,8 +195,17 @@ function runStage(stage) {
       const reportedPause = stage.result?.status === "paused";
       const reportedSkip = stage.result?.status === "skipped";
       if (pauseRequested || signal) stage.status = "paused";
+      else if (code === 0 && stage.result?.status === "completed_partial") {
+        stage.status = "completed_partial";
+      }
       else if (code !== 0 || reportedPause || reportedSkip || stage.error) {
         stage.status = reportedPause ? "paused" : "failed";
+        if (!stage.error && code !== 0) {
+          const failureLine = [...stage.output].reverse().find((item) =>
+            /^(FAIL|FATAL)\b/.test(item.line) || /Access denied|Missing required|permission/i.test(item.line)
+          );
+          stage.error = failureLine?.line || `process_exit_${code}`;
+        }
       } else {
         stage.status = "completed";
       }
@@ -191,15 +222,18 @@ async function execute() {
       if (pauseRequested) break;
       activeRun.current_stage_index = index + 1;
       const stage = await runStage(activeRun.stages[index]);
-      if (stage.status !== "completed") break;
+      if (!["completed", "completed_partial"].includes(stage.status)) break;
     }
     const stoppedStage = activeRun.stages.find((stage) => ["failed", "paused"].includes(stage.status));
     const completedCount = activeRun.stages.filter((stage) => stage.status === "completed").length;
+    const partialCount = activeRun.stages.filter((stage) => stage.status === "completed_partial").length;
     const status = pauseRequested || stoppedStage?.status === "paused"
       ? "paused"
       : stoppedStage
         ? "failed"
-        : completedCount === activeRun.stages.length
+        : partialCount > 0
+          ? "completed_partial"
+          : completedCount === activeRun.stages.length
           ? "completed"
           : "paused";
     updateState({
@@ -221,6 +255,7 @@ export function startLegacyRun(input = {}) {
   if (activeRun) {
     const error = new Error("pipeline_already_active");
     error.statusCode = 409;
+    error.currentRun = activeRun;
     throw error;
   }
   const options = normalizeOptions(input);
@@ -240,6 +275,11 @@ export function startLegacyRun(input = {}) {
     error: "",
     stages: stagesFor(options).map((stage) => ({
       ...stage,
+      env: stage.env ? {
+        FEISHU_HIRE_UPLOAD_MODE: stage.env.FEISHU_HIRE_UPLOAD_MODE,
+        FEISHU_HIRE_JOB_ID: stage.env.FEISHU_HIRE_JOB_ID,
+        FEISHU_HIRE_UPLOAD_STATE: stage.env.FEISHU_HIRE_UPLOAD_STATE,
+      } : undefined,
       status: "pending",
       started_at: "",
       ended_at: "",

@@ -1,0 +1,22 @@
+job_name: "AI应用实习生"
+job_id: ""
+proxy_url: "http://127.0.0.1:3456"
+
+max_greet_per_run: 20
+max_collect_per_run: 50
+max_scan_per_run: 80
+max_detail_reads_per_run: 40
+max_list_scroll_rounds: 4
+recommended_greet_interval_seconds_min: 3
+recommended_greet_interval_seconds_max: 8
+send_interval_seconds_min: 0.5
+send_interval_seconds_max: 1.5
+health_check_every_candidates: 10
+download_poll_interval_ms: 500
+download_max_wait_seconds: 30
+stop_on_captcha: true
+stop_on_login_error: true
+default_mode: "dry-run"
+
+request_resume_message: "你好，我这边看了你的经历，和当前岗位匹配度不错。方便的话，可以发一份最新附件简历给我吗？我这边进一步评估后再和你沟通，谢谢。"
+confirm_received_message: "简历已收到，我们会尽快筛选，合适的话会联系您。"

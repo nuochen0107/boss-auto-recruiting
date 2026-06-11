@@ -15,11 +15,14 @@ node_modules/
 # Runtime data and candidate personal information
 data/
 output/
+dist/
+build/
 work/
 course_report/
 tools/
 *.log
 *.pid
+*.spec
 
 # Local Boss/Feishu configuration contains credentials
 boss-loop/assets/default-config.yaml

@@ -4,13 +4,14 @@ const crypto = require("crypto");
 const { execFileSync } = require("child_process");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
-const DEFAULT_CONFIG = path.resolve(PROJECT_ROOT, "assets/default-config.yaml");
+const DATA_ROOT = path.resolve(process.env.BOSS_DATA_ROOT || path.join(PROJECT_ROOT, "../data"));
+const DEFAULT_CONFIG = path.resolve(process.env.BOSS_CONFIG_FILE || path.join(PROJECT_ROOT, "assets/default-config.yaml"));
 const DEFAULT_PROXY = "http://localhost:3456";
-const DEFAULT_STATE_FILE = path.join(PROJECT_ROOT, "briefs/boss-auto-lightweight-loop-state.json");
-const DEFAULT_LOG_FILE = path.join(PROJECT_ROOT, "briefs/boss-auto-lightweight-loop-run.jsonl");
-const DEFAULT_SYNC_QUEUE_FILE = path.join(PROJECT_ROOT, "briefs/boss-auto-lightweight-loop-sync-queue.jsonl");
-const DEFAULT_RESUME_DOWNLOAD_DIR = path.join(PROJECT_ROOT, "resumes");
-const DEFAULT_LOCK_DIR = path.join(PROJECT_ROOT, "briefs/boss-auto.lockdir");
+const DEFAULT_STATE_FILE = path.join(DATA_ROOT, "briefs/boss-auto-lightweight-loop-state.json");
+const DEFAULT_LOG_FILE = path.join(DATA_ROOT, "briefs/boss-auto-lightweight-loop-run.jsonl");
+const DEFAULT_SYNC_QUEUE_FILE = path.join(DATA_ROOT, "briefs/boss-auto-lightweight-loop-sync-queue.jsonl");
+const DEFAULT_RESUME_DOWNLOAD_DIR = path.join(DATA_ROOT, "resumes");
+const DEFAULT_LOCK_DIR = path.join(DATA_ROOT, "briefs/boss-auto.lockdir");
 
 const SENT_OR_COMPLETED_STATES = new Set([
   "first_contact_sent",
@@ -79,8 +80,8 @@ function loadConfigOptions(args) {
     resumeDownloadDir: args["resume-download-dir"] || readYamlScalar(config, "resume_download_dir") || DEFAULT_RESUME_DOWNLOAD_DIR,
     lockDir: args["lock-dir"] || readYamlScalar(config, "lock_dir") || DEFAULT_LOCK_DIR,
     lockTtlMinutes: readYamlNumber(config, "lock_ttl_minutes", 30),
-    maxGreetPerRun: readYamlNumber(config, "max_greet_per_run", 20),
-    maxCollectPerRun: readYamlNumber(config, "max_collect_per_run", 50),
+    maxGreetPerRun: Number(args["max-greet-per-run"]) || readYamlNumber(config, "max_greet_per_run", 20),
+    maxCollectPerRun: Number(args["max-collect-per-run"]) || readYamlNumber(config, "max_collect_per_run", 50),
     collectRequestTtlDays: readYamlNumber(config, "collect_request_ttl_days", 3),
     maxScanPerRun: readYamlNumber(config, "max_scan_per_run", 80),
     maxDetailReadsPerRun: readYamlNumber(config, "max_detail_reads_per_run", 40),
@@ -204,6 +205,9 @@ function makeClient(options) {
     targets() {
       return requestJson("GET", `${proxy}/targets`);
     },
+    navigate(url) {
+      return requestJson("GET", `${proxy}/navigate?target=${encodeURIComponent(target)}&url=${encodeURIComponent(url)}`);
+    },
     sleep: sleepMs,
   };
 }
@@ -211,13 +215,15 @@ function makeClient(options) {
 function pageHealth(cdp) {
   return cdp.eval(`(() => {
     const text = (document.body.innerText || '').trim().slice(0, 2000);
+    const hasChatList = !!document.querySelector('.geek-item');
     return {
-      loginExpired: /登录|扫码登录|验证码|安全验证/.test(text) && !document.querySelector('.geek-item'),
+      loginExpired: /请登录|扫码登录|登录后继续|账号登录/.test(text) && !hasChatList,
       captcha: /验证码|安全验证|拖动滑块|行为验证/.test(text),
-      hasChatList: !!document.querySelector('.geek-item'),
+      hasChatList,
       hasEditor: !!document.querySelector('.chat-container-private [contenteditable="true"], .chat-input [contenteditable="true"], [contenteditable="true"]'),
       title: document.title,
-      url: location.href
+      url: location.href,
+      textSample: text.slice(0, 500)
     };
   })()`);
 }

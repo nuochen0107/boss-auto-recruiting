@@ -1,4 +1,4 @@
-#!/usr/bin/env /Users/apple/boss-auto-recruiting/.venv/bin/python3
+#!/usr/bin/env python3
 
 import json
 import os
@@ -99,6 +99,7 @@ def extract_ocr_text(pdf_path: Path):
         return "", "disabled"
 
     tesseract = shutil.which("tesseract")
+    vision_binary = os.environ.get("BOSS_VISION_OCR_BIN") or shutil.which("boss-vision-ocr")
     vision_ocr = shutil.which("swift")
 
     chunks = []
@@ -115,6 +116,8 @@ def extract_ocr_text(pdf_path: Path):
                         page_text = run_tesseract(tesseract, image_path, "chi_sim+eng")
                         if not page_text:
                             page_text = run_tesseract(tesseract, image_path, "eng")
+                    if not page_text and vision_binary:
+                        page_text = run_vision_binary(vision_binary, image_path)
                     if not page_text and vision_ocr:
                         page_text = run_vision_ocr(vision_ocr, image_path)
                     if page_text:
@@ -127,7 +130,7 @@ def extract_ocr_text(pdf_path: Path):
     text = "\n".join(chunks)
     if normalized_lines(text):
         return text, "tesseract_ok" if tesseract else "vision_ok"
-    if not tesseract and not vision_ocr:
+    if not tesseract and not vision_binary and not vision_ocr:
         return "", "ocr_engine_not_found"
     if not tesseract:
         return "", "vision_empty"
@@ -157,6 +160,22 @@ def run_vision_ocr(swift: str, image_path: Path) -> str:
     try:
         completed = subprocess.run(
             [swift, str(script), str(image_path)],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout
+
+
+def run_vision_binary(binary: str, image_path: Path) -> str:
+    try:
+        completed = subprocess.run(
+            [binary, str(image_path)],
             capture_output=True,
             check=False,
             text=True,

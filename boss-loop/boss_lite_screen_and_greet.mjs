@@ -5,7 +5,8 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_CONFIG = path.resolve(__dirname, '../assets/default-config.yaml');
+const DATA_ROOT = path.resolve(process.env.BOSS_DATA_ROOT || path.resolve(__dirname, '../data'));
+const DEFAULT_CONFIG = path.resolve(process.env.BOSS_CONFIG_FILE || path.resolve(__dirname, '../assets/default-config.yaml'));
 
 /* ================================================================
    Phase 1: Config + CLI
@@ -51,14 +52,14 @@ function loadConfig() {
     job_id: args['job-id'] || readYamlScalar(configFile, 'job_id') || '',
     mode: 'screen-and-greet',
     proxy: (args.proxy || readYamlScalar(configFile, 'proxy_url') || 'http://127.0.0.1:3456').replace(/\/$/, ''),
-    state_file: args['state-file'] || readYamlScalar(configFile, 'state_file') || path.resolve(__dirname, '../data/briefs/boss-auto-lightweight-loop-state.json'),
-    contacted_boss_ids_file: args['contacted-boss-ids-file'] || readYamlScalar(configFile, 'contacted_boss_ids_file') || path.resolve(__dirname, '../data/briefs/boss-auto-contacted-ids.jsonl'),
-    direct_greet_contacted_file: args['direct-greet-contacted-file'] || path.resolve(__dirname, '../data/briefs/boss-direct-greet-contacted.jsonl'),
-    run_log_jsonl_file: args['log-file'] || readYamlScalar(configFile, 'run_log_jsonl_file') || path.resolve(__dirname, '../data/briefs/boss-auto-lightweight-loop-run.jsonl'),
-    lock_dir: args['lock-dir'] || readYamlScalar(configFile, 'lock_dir') || path.resolve(__dirname, '../data/briefs/boss-auto.lockdir'),
-    run_dir: args['run-dir'] || readYamlScalar(configFile, 'run_log_dir') || path.resolve(__dirname, '../data/briefs'),
-    resume_dir: args['resume-dir'] || readYamlScalar(configFile, 'resume_download_dir') || path.resolve(__dirname, '../data/resumes'),
-    job_profile_cache_dir: readYamlScalar(configFile, 'job_profile_cache_dir') || path.resolve(__dirname, '../data/briefs/job-profiles'),
+    state_file: args['state-file'] || readYamlScalar(configFile, 'state_file') || path.join(DATA_ROOT, 'briefs/boss-auto-lightweight-loop-state.json'),
+    contacted_boss_ids_file: args['contacted-boss-ids-file'] || readYamlScalar(configFile, 'contacted_boss_ids_file') || path.join(DATA_ROOT, 'briefs/boss-auto-contacted-ids.jsonl'),
+    direct_greet_contacted_file: args['direct-greet-contacted-file'] || path.join(DATA_ROOT, 'briefs/boss-direct-greet-contacted.jsonl'),
+    run_log_jsonl_file: args['log-file'] || readYamlScalar(configFile, 'run_log_jsonl_file') || path.join(DATA_ROOT, 'briefs/boss-auto-lightweight-loop-run.jsonl'),
+    lock_dir: args['lock-dir'] || readYamlScalar(configFile, 'lock_dir') || path.join(DATA_ROOT, 'briefs/boss-auto.lockdir'),
+    run_dir: args['run-dir'] || readYamlScalar(configFile, 'run_log_dir') || path.join(DATA_ROOT, 'briefs'),
+    resume_dir: args['resume-dir'] || readYamlScalar(configFile, 'resume_download_dir') || path.join(DATA_ROOT, 'resumes'),
+    job_profile_cache_dir: readYamlScalar(configFile, 'job_profile_cache_dir') || path.join(DATA_ROOT, 'briefs/job-profiles'),
     job_profile_cache_ttl_days: readYamlNumber(configFile, 'job_profile_cache_ttl_days', 30),
     job_profile_cache_enabled: readYamlScalar(configFile, 'job_profile_cache_enabled') !== 'false',
     lock_ttl_minutes: readYamlNumber(configFile, 'lock_ttl_minutes', 30),
@@ -74,7 +75,7 @@ function loadConfig() {
     send_interval_seconds_min: readYamlNumber(configFile, 'send_interval_seconds_min', 0.5),
     send_interval_seconds_max: readYamlNumber(configFile, 'send_interval_seconds_max', 1.5),
     input_to_send_delay_ms: readYamlNumber(configFile, 'input_to_send_delay_ms', 100),
-    send_confirm_timeout_ms: readYamlNumber(configFile, 'send_confirm_timeout_ms', 800),
+    send_confirm_timeout_ms: readYamlNumber(configFile, 'send_confirm_timeout_ms', 2500),
     greet_confirm_timeout_ms: readYamlNumber(configFile, 'greet_confirm_timeout_ms', 800),
     thread_switch_timeout_ms: readYamlNumber(configFile, 'thread_switch_timeout_ms', 500),
     resume_panel_timeout_ms: readYamlNumber(configFile, 'resume_panel_timeout_ms', 800),
@@ -108,6 +109,7 @@ let stateRoot = null;
 let rootWasArray = false;
 let contactedBossIds = new Set();
 let directGreetContactedIds = new Set();
+const sendingBossIds = new Set();
 let dirty = new Map();
 let haveLock = false;
 let pausedReason = null;
@@ -272,6 +274,7 @@ function rememberContactedBossId(candidate) {
     job_name: candidate?.job_name || CFG.job_name,
     contacted_at: candidate?.message_sent_at || nowIso(),
     source: candidate?.source || 'inbound_chat',
+    evidence: candidate?.contact_evidence || 'message_confirmed_in_thread',
   }) + '\n');
   contactedBossIds.add(bossId);
 }
@@ -296,6 +299,16 @@ function isAlreadyRequested(candidate) {
     sentStates.has(candidate.status) ||
     candidate.skip_reason === 'already_contacted' ||
     /already_requested|message_sent|recommended_greet_sent_request_resume/.test(String(candidate.last_observation || ''))
+  );
+}
+
+function hasVerifiedRequestEvidence(candidate) {
+  if (!candidate) return false;
+  if (candidate.last_observation === 'message_sent') return true;
+  if (candidate.last_observation === 'identical_message_already_visible') return true;
+  return (candidate.history || []).some(event =>
+    event?.action === 'send_resume_request' &&
+    (event?.result === 'ok' || event?.error_code === 'identical_message_already_visible')
   );
 }
 
@@ -594,12 +607,27 @@ async function gotoChat() {
   })()`)).value);
   if (nav.ok) await clickSelector('[data-lobster-nav="chat"]');
   await sleep(1500);
-  const checked = JSON.parse((await evalTarget(`(() => JSON.stringify({ items: document.querySelectorAll('.geek-item[data-id],.geek-item').length, url: location.href }))()`)).value);
+  let checked = JSON.parse((await evalTarget(`(() => JSON.stringify({
+    items: document.querySelectorAll('.geek-item[data-id],.geek-item').length,
+    url: location.href,
+    captcha: /验证码|安全验证|拖动滑块|行为验证/.test(document.body.innerText || ''),
+    login: /请登录|扫码登录|登录后继续|账号登录/.test(document.body.innerText || '')
+  }))()`)).value);
   if (!checked.items) {
     await httpJson(`${CFG.proxy}/navigate?target=${encodeURIComponent(targetId)}&url=${encodeURIComponent('https://www.zhipin.com/web/chat/index')}`, { timeout: 8000 });
-    await sleep(2200);
     await closeBlockingDialogs('after_goto_chat_fallback');
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await sleep(1200);
+      checked = JSON.parse((await evalTarget(`(() => JSON.stringify({
+        items: document.querySelectorAll('.geek-item[data-id],.geek-item').length,
+        url: location.href,
+        captcha: /验证码|安全验证|拖动滑块|行为验证/.test(document.body.innerText || ''),
+        login: /请登录|扫码登录|登录后继续|账号登录/.test(document.body.innerText || '')
+      }))()`)).value);
+      if (checked.items || checked.login || checked.captcha) break;
+    }
   }
+  return checked;
 }
 
 async function resetChatListToTop() {
@@ -654,7 +682,8 @@ async function readChatCardsOnePage() {
       const name = lines.find(x => !invalidName(x)) || '';
       const unread = /^\\d+$/.test(lines[0] || '');
       const timeText = lines.find(x => /^(今天|昨天|前天|刚刚|\\d+分钟前|\\d+小时前|\\d{1,2}:\\d{2})$/.test(x)) || '';
-      return { idx, boss_id: id, name, text: lines.join('\\n'), unread, timeText };
+      const latestFromSelfHint = /\\[(?:送达|已读|未读)\\]/.test(lines.join('\\n'));
+      return { idx, boss_id: id, name, text: lines.join('\\n'), unread, timeText, latestFromSelfHint };
     });
     return JSON.stringify({ captcha: /验证码|安全验证|拖动/.test(text), login: /请登录|扫码登录/.test(text) && !items.length, items });
   })()`;
@@ -749,9 +778,80 @@ async function openChatAndReadDetail(item) {
     const eduEl2 = document.querySelector('[class*="edu"], [class*="education"]');
     if (eduEl2) eduText = (eduEl2.innerText || '').slice(0, 400);
 
-    // Recent real messages (exclude quick action buttons)
+    // Classify the latest turn. An attachment followed by "请查收" is still
+    // an incoming resume as long as both messages arrived after our last reply.
     const conv = document.querySelector('.chat-conversation, [class*="conversation"]');
-    const messageBubbles = conv ? [...conv.querySelectorAll('.chat-message, .message-bubble, [class*="message"]')].map(el => (el.innerText || '').trim()).filter(Boolean).slice(-6) : [];
+    const visible = el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden';
+    };
+    const explicitRows = conv ? [...conv.querySelectorAll(
+      '.item-myself,.item-friend,.chat-message,.message-row,.message-item,[class*="message-item"],[class*="message-row"]'
+    )].filter(visible) : [];
+    const fallbackRows = !explicitRows.length && conv
+      ? [...conv.querySelectorAll('.message-bubble,[class*="message"]')].filter(visible).filter(el => {
+          const value = (el.innerText || el.textContent || '').trim();
+          if (!value) return false;
+          return ![...el.children].some(child => (child.innerText || child.textContent || '').trim() === value);
+        })
+      : [];
+    const messageRows = (explicitRows.length ? explicitRows : fallbackRows).filter((el, index, rows) =>
+      !rows.some((other, otherIndex) => otherIndex !== index && other.contains(el))
+    );
+    const convRect = conv?.getBoundingClientRect?.();
+    const messages = messageRows.map(row => {
+      const rowText = (row.innerText || row.textContent || '').trim();
+      const owner = row.closest(
+        '.item-myself,.item-friend,.message-self,.message-right,.is-me,.my-message,.from-me,[class*="myself"],[class*="self"],[class*="mine"],[class*="right"]'
+      ) || row;
+      const signature = [
+        owner.className?.baseVal || owner.className || '',
+        owner.getAttribute?.('data-from') || '',
+        owner.getAttribute?.('data-owner') || ''
+      ].join(' ');
+      const rect = row.getBoundingClientRect?.();
+      const textSaysSelf = (
+        /(?:^|\\n)(?:已读|送达|未读)(?:\\n|$)/.test(rowText) &&
+        (
+          rowText.includes(${JSON.stringify(CFG.request_resume_message)}) ||
+          rowText.includes(${JSON.stringify(CFG.confirm_received_message)})
+        )
+      );
+      const classSaysSelf = textSaysSelf ||
+        /myself|message-self|is-me|my-message|from-me|mine|message-right|item-my|\\bright\\b/i.test(signature);
+      const classSaysCandidate = /item-friend|message-left|from-candidate|from-geek|\\bleft\\b/i.test(signature);
+      const positionSaysSelf = !!(!classSaysCandidate && convRect && rect && rect.width > 0 &&
+        (rect.left + rect.width / 2) > (convRect.left + convRect.width * 0.58));
+      const attachmentControl = [...row.querySelectorAll('button,a,div,span,[role="button"]')]
+        .filter(visible)
+        .some(el => /^(同意|接收)$|点击预览附件简历|^.{1,120}\\.(?:pdf|doc|docx)$/i.test(
+          (el.innerText || el.textContent || '').trim()
+        ));
+      const attachmentText = /对方想发送附件简历给您，您是否同意|点击预览附件简历|^.{1,120}\\.(?:pdf|doc|docx)$/im.test(rowText);
+      return {
+        text: rowText.slice(0, 500),
+        fromSelf: classSaysSelf || positionSaysSelf,
+        fromCandidate: classSaysCandidate || !(classSaysSelf || positionSaysSelf),
+        hasAttachment: attachmentControl || attachmentText,
+        owner: signature.slice(0, 200)
+      };
+    }).filter(message => message.text);
+    const lastMessage = messages.at(-1) || null;
+    const lastSelfIndex = messages.findLastIndex(message => message.fromSelf);
+    const incomingTail = messages.slice(lastSelfIndex + 1).filter(message => message.fromCandidate);
+    const incomingTailHasAttachment = incomingTail.some(message => message.hasAttachment);
+    const listSaysSelf = ${JSON.stringify(!!item.latestFromSelfHint)};
+    const conversationState = listSaysSelf
+      ? 'outgoing_waiting'
+      : lastMessage
+        ? lastMessage.fromSelf
+        ? 'outgoing_waiting'
+        : incomingTailHasAttachment
+          ? 'incoming_resume'
+          : 'incoming_message'
+        : 'unknown';
 
     const identity = name ? rightText.includes(name) || selected.includes(name) : true;
     const hasResumeAnchor = /在线简历|附件简历|简历/.test(rightText);
@@ -764,7 +864,14 @@ async function openChatAndReadDetail(item) {
       school,
       workText: workText.slice(0, 600),
       eduText: eduText.slice(0, 400),
-      messages: messageBubbles,
+      messages: messages.slice(-6).map(message => message.text),
+      lastMessageText: lastMessage?.text || '',
+      lastMessageFromSelf: conversationState === 'outgoing_waiting',
+      lastMessageOwner: lastMessage?.owner || '',
+      conversationState,
+      latestMessageHasAttachment: conversationState === 'incoming_resume',
+      incomingTailHasAttachment,
+      incomingTailTexts: incomingTail.slice(-6).map(message => message.text),
       hasResumeAnchor,
       captcha: /验证码|安全验证|拖动/.test(text)
     });
@@ -895,6 +1002,18 @@ function scoreCandidateFallback(detail, jobProfile) {
   };
 }
 
+function directContactDecision() {
+  return {
+    rating: 5,
+    hard_filters_passed: true,
+    match_reasons: '当前流程不启用候选人评分',
+    risk_points: '',
+    skip_reason: null,
+    recommended_action: 'auto_contact',
+    scoring_disabled: true,
+  };
+}
+
 async function scoreCandidateWithLLM(detail, jobProfile) {
   const text = `${detail.text || ''}\n工作经历：${detail.workText || ''}\n教育经历：${detail.eduText || ''}\n最近消息：${(detail.messages || []).join(' | ')}`;
 
@@ -952,7 +1071,38 @@ ${text.slice(0, 1500)}
 async function sendResumeRequest() {
   const msg = CFG.request_resume_message;
 
-  // 1. Fill message
+  // 1. The caller has already classified the latest message. Keep only the
+  // exact-message idempotency check here.
+  const before = JSON.parse((await evalTarget(`(() => {
+    const normalize = value => String(value || '').replace(/\\s+/g, '').trim();
+    const expected = normalize(${JSON.stringify(msg)});
+    const conv = document.querySelector('.chat-conversation, [class*="conversation"]');
+    if (!conv) return JSON.stringify({ ok: false, reason: 'conversation_not_found', exactCount: 0 });
+    const conversationText = normalize(conv.innerText || conv.textContent || '');
+    const nodes = [...conv.querySelectorAll('.chat-message, .message-bubble, [class*="message"]')];
+    const exactNodes = nodes.filter(el => {
+      const text = normalize(el.innerText || el.textContent || '');
+      if (text !== expected) return false;
+      return ![...el.children].some(child => normalize(child.innerText || child.textContent || '') === expected);
+    });
+    return JSON.stringify({
+      ok: true,
+      exactCount: exactNodes.length,
+      conversationContains: conversationText.includes(expected)
+    });
+  })()`)).value);
+  if (!before.ok) throw new Error('paused_send_failed');
+  if (before.exactCount > 0 || before.conversationContains) {
+    return {
+      alreadySent: true,
+      reason: 'identical_message_already_visible',
+      cleared: true,
+      exactCountBefore: before.exactCount,
+      exactCountAfter: before.exactCount
+    };
+  }
+
+  // 2. Fill message
   const wrote = JSON.parse((await evalTarget(`(() => {
     const input = document.querySelector('.chat-container-private [contenteditable], [contenteditable]');
     if (!input) return JSON.stringify({ ok: false, reason: 'editor_not_found' });
@@ -965,7 +1115,7 @@ async function sendResumeRequest() {
   })()`)).value);
   if (!wrote.ok) throw new Error('paused_send_failed');
 
-  // 2. Small delay then locate and click send button
+  // 3. Small delay then locate and click send button exactly once.
   await sleep(CFG.input_to_send_delay_ms);
 
   const sendProbe = JSON.parse((await evalTarget(`(() => {
@@ -997,22 +1147,33 @@ async function sendResumeRequest() {
 
   await clickSelector(sendProbe.selector);
 
-  // 3. Confirm sent
+  // 4. Confirm that this click created a new exact message node.
   const confirmExpr = `new Promise(r => setTimeout(() => {
     const msg = ${JSON.stringify(msg)};
+    const exactCountBefore = ${before.exactCount};
+    const normalize = value => String(value || '').replace(/\\s+/g, '').trim();
+    const expected = normalize(msg);
     const input = document.querySelector('.chat-container-private [contenteditable], [contenteditable]');
     const editorText = (input?.innerText || input?.textContent || '').trim();
-    const conv = document.querySelector('.chat-conversation');
-    const convText = (conv?.innerText || document.body.innerText || '');
-    const bubbles = [...document.querySelectorAll('.chat-message, .message-bubble, [class*="message"]')];
-    const lastBubble = bubbles[bubbles.length - 1];
-    const lastBubbleText = lastBubble ? (lastBubble.innerText || lastBubble.textContent || '').trim() : '';
+    const conv = document.querySelector('.chat-conversation, [class*="conversation"]');
+    const conversationText = normalize(conv?.innerText || conv?.textContent || '');
+    const nodes = conv ? [...conv.querySelectorAll('.chat-message, .message-bubble, [class*="message"]')] : [];
+    const exactNodes = nodes.filter(el => {
+      const text = normalize(el.innerText || el.textContent || '');
+      if (text !== expected) return false;
+      return ![...el.children].some(child => normalize(child.innerText || child.textContent || '') === expected);
+    });
+    const createdCount = exactNodes.length - exactCountBefore;
+    const conversationContains = conversationText.includes(expected);
     r(JSON.stringify({
       cleared: !editorText || !editorText.includes(msg.slice(0, 20)),
-      inConv: convText.includes(msg.slice(0, 18)),
-      inLastBubble: lastBubbleText.includes(msg.slice(0, 18)),
+      created: createdCount === 1 || conversationContains,
+      duplicateCreated: createdCount > 1,
+      createdCount,
+      exactCountBefore,
+      exactCountAfter: exactNodes.length,
+      conversationContains,
       editorText: editorText.slice(0, 120),
-      lastBubbleText: lastBubbleText.slice(0, 120)
     }));
   }, ${CFG.send_confirm_timeout_ms}))`;
 
@@ -1024,10 +1185,18 @@ async function sendResumeRequest() {
    ================================================================ */
 
 async function processInbound() {
-  await gotoChat();
-
-  // Load job profile once for scoring
-  const jobProfile = await loadJobProfile();
+  const chatPage = await gotoChat();
+  if (chatPage.captcha) throw new Error('paused_captcha_detected');
+  if (chatPage.login) throw new Error('paused_login_required');
+  if (!chatPage.items) {
+    appendLog({
+      action: 'chat_page_ready',
+      result: 'failed',
+      error_code: 'paused_chat_page_unavailable',
+      url: chatPage.url || '',
+    });
+    throw new Error('paused_chat_page_unavailable');
+  }
 
   // Interleaved scroll + process: process candidates while they're still in the DOM
   const allItems = new Map();
@@ -1039,6 +1208,7 @@ async function processInbound() {
   appendLog({ action: 'chat_list_reset', result: reset.ok ? 'ok' : 'failed', detail: reset });
   await sleep(400);
 
+  scanRounds:
   for (let round = 0; round <= CFG.max_list_scroll_rounds; round++) {
     const data = await readChatCardsOnePage();
     if (data.captcha) throw new Error('paused_captcha_detected');
@@ -1071,18 +1241,14 @@ async function processInbound() {
       }
       const id = bossCandidateId(bossId);
       const existing = getCandidate(id);
-      if (hasContactedBossId(bossId) || (existing && isAlreadyRequested(existing))) {
-        counters.skipped++;
-        appendLog({ candidate_id: id, boss_id: bossId, source: 'inbound_chat', action: 'screen_inbound', result: 'skip', error_code: 'already_contacted_boss_id' });
-        continue;
-      }
 
       counters.scanned++;
       detailReads++;
 
       if (CFG.dryRun) {
-        const score = scoreCandidateFallback({ text: item.text }, jobProfile);
+        const score = directContactDecision();
         scored.push({ item, id, score, detail: { text: item.text } });
+        counters.eligible++;
         putCandidate({
           candidate_id: id, boss_id: bossId, name: item.name, school: '', job_name: CFG.job_name, source: 'inbound_chat',
           status: score.rating >= CFG.auto_send_threshold && score.hard_filters_passed ? 'eligible' : 'screened',
@@ -1093,6 +1259,7 @@ async function processInbound() {
           history_event: { action: 'screen_inbound', result: score.rating >= CFG.auto_send_threshold && score.hard_filters_passed ? 'eligible' : 'skip', error_code: score.skip_reason }
         });
         appendLog({ candidate_id: id, boss_id: bossId, source: 'inbound_chat', action: 'screen_inbound', result: score.rating >= CFG.auto_send_threshold && score.hard_filters_passed ? 'eligible' : 'skip', rating: score.rating });
+        if (counters.eligible >= CFG.max_greet_per_run) break scanRounds;
         continue;
       }
 
@@ -1120,29 +1287,118 @@ async function processInbound() {
       const schoolFromDetail = opened.detail.school || '';
       const stableId = id;
 
-      const score = await scoreCandidateWithLLM(opened.detail, jobProfile);
+      const score = directContactDecision();
       scored.push({ item, id: stableId, score, detail: opened.detail });
 
       const status = score.rating >= CFG.auto_send_threshold && score.hard_filters_passed ? 'eligible' : 'screened';
-      putCandidate({
-        candidate_id: stableId, boss_id: bossId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name, source: 'inbound_chat',
-        card_work_experience_text: opened.detail.workText || item.text.slice(0, 300),
-        card_education_experience_text: opened.detail.eduText || '',
-        status, rating: score.rating, hard_filters_passed: score.hard_filters_passed,
-        decision: score.rating >= CFG.auto_send_threshold && score.hard_filters_passed ? 'auto_contact' : 'skip',
-        skip_reason: score.skip_reason, match_reasons: score.match_reasons, risk_points: score.risk_points,
-        last_observation: schoolFromDetail ? 'detail_read_school_found' : 'detail_read_school_missing',
-        history_event: { action: 'screen_inbound', result: status === 'eligible' ? 'eligible' : 'skip', rating: score.rating }
-      });
       appendLog({ candidate_id: stableId, boss_id: bossId, source: 'inbound_chat', action: 'screen_inbound', result: status, rating: score.rating, hard_filters_passed: score.hard_filters_passed });
 
       // Send immediately to eligible candidates while chat is open
       if (status === 'eligible' && counters.sent < CFG.max_greet_per_run) {
+        if (opened.detail.conversationState === 'incoming_resume') {
+          counters.skipped++;
+          const completedStatus = existing?.boss_completed_at
+            ? 'boss_completed'
+            : existing?.local_resume_path && existing?.resume_hash
+              ? 'ready_for_hire_sync'
+              : '';
+          if (completedStatus) {
+            appendLog({
+              candidate_id: stableId, boss_id: bossId, source: 'inbound_chat',
+              action: 'send_resume_request', result: 'skipped',
+              error_code: 'resume_already_collected',
+              preserved_status: completedStatus,
+              last_message_text: opened.detail.lastMessageText || ''
+            });
+            continue;
+          }
+          const attachmentCandidate = {
+            candidate_id: stableId, boss_id: bossId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name, source: 'inbound_chat',
+            status: 'attachment_sent_by_candidate',
+            rating: score.rating, hard_filters_passed: true,
+            decision: 'collect_resume', skip_reason: 'candidate_already_sent_resume',
+            message_sent_at: existing?.message_sent_at || nowIso(),
+            last_observation: 'incoming_turn_contains_resume',
+            history_event: {
+              action: 'send_resume_request',
+              result: 'skipped',
+              error_code: 'candidate_already_sent_resume',
+              from: 'eligible',
+              to: 'attachment_sent_by_candidate'
+            }
+          };
+          putCandidate(attachmentCandidate);
+          appendLog({
+            candidate_id: stableId, boss_id: bossId, source: 'inbound_chat',
+            action: 'send_resume_request', result: 'skipped',
+            error_code: 'candidate_already_sent_resume',
+            conversation_state: opened.detail.conversationState,
+            last_message_text: opened.detail.lastMessageText || '',
+            incoming_tail_texts: opened.detail.incomingTailTexts || []
+          });
+          continue;
+        }
+        if (opened.detail.conversationState === 'outgoing_waiting') {
+          counters.skipped++;
+          appendLog({
+            candidate_id: stableId, boss_id: bossId, source: 'inbound_chat',
+            action: 'send_resume_request',
+            result: 'skipped', error_code: 'latest_message_from_self',
+            contacted_boss_id_recorded: hasContactedBossId(bossId),
+            last_message_text: opened.detail.lastMessageText || '',
+            last_message_owner: opened.detail.lastMessageOwner || ''
+          });
+          continue;
+        }
+        if (opened.detail.conversationState !== 'incoming_message') {
+          counters.skipped++;
+          appendLog({
+            candidate_id: stableId, boss_id: bossId, source: 'inbound_chat',
+            action: 'send_resume_request', result: 'skipped',
+            error_code: 'conversation_state_unknown'
+          });
+          continue;
+        }
         const latestRoot = readLatestStateRoot();
         const alreadyRequested = findAlreadyRequestedInRoot(latestRoot, { candidate_id: stableId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name });
-        if (!hasContactedBossId(bossId) && !alreadyRequested) {
-          const sent = await sendResumeRequest();
-          if (sent.cleared && (sent.inConv || sent.inLastBubble)) {
+        const verifiedRequest = hasContactedBossId(bossId) || hasVerifiedRequestEvidence(alreadyRequested || existing);
+        if (verifiedRequest) {
+          counters.skipped++;
+          appendLog({
+            candidate_id: stableId, boss_id: bossId, source: 'inbound_chat',
+            action: 'send_resume_request', result: 'deduplicated',
+            error_code: 'verified_request_already_sent',
+            contacted_boss_id_recorded: hasContactedBossId(bossId),
+            last_message_text: opened.detail.lastMessageText || ''
+          });
+          continue;
+        }
+        if (!sendingBossIds.has(bossId)) {
+          sendingBossIds.add(bossId);
+          let sent;
+          try {
+            sent = await sendResumeRequest();
+          } finally {
+            sendingBossIds.delete(bossId);
+          }
+          if (sent.alreadySent) {
+            const contactedAt = nowIso();
+            const contactedCandidate = {
+              candidate_id: stableId, boss_id: bossId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name, source: 'inbound_chat',
+              status: 'attachment_requested', rating: score.rating, hard_filters_passed: true,
+              decision: 'auto_contact', message_sent_at: contactedAt,
+              skip_reason: sent.reason || 'already_contacted',
+              last_observation: sent.reason || 'identical_message_already_visible',
+              contact_evidence: 'identical_message_visible_in_thread',
+              history_event: { action: 'send_resume_request', result: 'deduplicated', error_code: sent.reason || 'already_contacted', from: 'eligible', to: 'attachment_requested' }
+            };
+            rememberContactedBossId(contactedCandidate);
+            putCandidate(contactedCandidate);
+            appendLog({ candidate_id: stableId, boss_id: bossId, source: 'inbound_chat', action: 'send_resume_request', status_to: 'attachment_requested', result: 'deduplicated', detail: sent });
+          } else if (sent.duplicateCreated) {
+            appendLog({ candidate_id: stableId, boss_id: bossId, source: 'inbound_chat', action: 'send_resume_request', result: 'paused', error_code: 'duplicate_send_detected', detail: sent });
+            throw new Error('paused_duplicate_send_detected');
+          } else if (sent.cleared && sent.created) {
             failures = 0;
             counters.sent++;
             const contactedAt = nowIso();
@@ -1151,11 +1407,13 @@ async function processInbound() {
               status: 'attachment_requested', rating: score.rating, hard_filters_passed: true,
               decision: 'auto_contact', skip_reason: null, message_sent_at: contactedAt,
               last_observation: 'message_sent',
+              contact_evidence: 'message_confirmed_in_thread',
               history_event: { action: 'send_resume_request', result: 'ok', from: 'eligible', to: 'attachment_requested' }
             };
             rememberContactedBossId(contactedCandidate);
             putCandidate(contactedCandidate);
             appendLog({ candidate_id: stableId, boss_id: bossId, source: 'inbound_chat', action: 'send_resume_request', status_to: 'attachment_requested', result: 'ok' });
+            if (counters.sent >= CFG.max_greet_per_run) break scanRounds;
             await sleep(rand(CFG.send_interval_seconds_min, CFG.send_interval_seconds_max) * 1000);
           } else {
             failures++;

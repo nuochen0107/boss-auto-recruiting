@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { buildBatchPlan, normalizeRunOptions } from "./quota_scheduler.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DATA_DIR = path.join(ROOT, "data");
+const DATA_DIR = path.resolve(process.env.BOSS_DATA_ROOT || path.join(ROOT, "data"));
 const RUN_DIR = path.join(DATA_DIR, "runs");
 const CANDIDATE_DIR = path.join(DATA_DIR, "candidates");
 const CURRENT_FILE = path.join(RUN_DIR, "current-run.json");
@@ -162,10 +162,20 @@ async function clickSelector(targetId, selector) {
 
 async function findBossTarget() {
   const targets = await requestJson(`${PROXY}/targets`, { timeout: 2500 });
-  const target = (targets || []).find((item) =>
+  const candidates = (targets || []).filter((item) =>
     item.type === "page" &&
     /zhipin\.com/.test(item.url || "") &&
     !/登录/.test(item.title || ""));
+  const target = candidates.sort((a, b) => {
+    const priority = item => {
+      const url = item.url || "";
+      if (/\/web\/chat\/recommend/.test(url)) return 0;
+      if (/\/web\/chat/.test(url)) return 1;
+      if (/\/web\/geek\/recommend|\/web\/recruit/.test(url)) return 2;
+      return 10;
+    };
+    return priority(a) - priority(b);
+  })[0];
   if (!target) throw new Error("paused_boss_not_logged_in");
   return target;
 }
@@ -176,12 +186,22 @@ async function inspectPage(targetId) {
       try { return f.contentDocument; } catch { return null; }
     }).filter(Boolean)];
     const text = docs.map(d => d.body?.innerText || '').join('\\n').slice(0, 30000);
+    const warningPattern = /操作(?:过于)?频繁|账号(?:存在)?异常|检测到异常操作|暂时无法沟通|访问受限|沟通功能受限|账号存在风险/;
+    const visibleNoticeText = docs.flatMap(d => [...d.querySelectorAll(
+      '[role="dialog"],[class*="dialog"],[class*="modal"],[class*="toast"],[class*="notice"],[class*="warning"]'
+    )]).filter(el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 && style?.display !== 'none' && style?.visibility !== 'hidden';
+    }).map(el => (el.innerText || el.textContent || '').trim()).filter(Boolean).slice(0, 20);
+    const warningText = visibleNoticeText.find(value => warningPattern.test(value)) || '';
     return {
       title: document.title,
       url: location.href,
       captcha: /验证码|安全验证|拖动滑块|行为验证|人机验证/.test(text),
       login: /请登录|扫码登录|登录后/.test(text),
-      warning: /操作频繁|存在风险|账号异常|平台警告|违规|暂时无法沟通|访问受限/.test(text),
+      warning: Boolean(warningText) || warningPattern.test(text),
+      warning_reason: warningText || (text.match(warningPattern) || [])[0] || '',
       quota: /今日沟通额度.*(?:用完|耗尽)|沟通次数已用完|暂无沟通次数|权益.*耗尽/.test(text)
     };
   })())`);
@@ -189,6 +209,21 @@ async function inspectPage(targetId) {
 }
 
 async function gotoRecommend(targetId) {
+  const current = await requestJson(`${PROXY}/info?target=${encodeURIComponent(targetId)}`, { timeout: 3000 }).catch(() => null);
+  if (/\/web\/chat\/recommend/.test(current?.url || "")) {
+    return { ok: true, targetId, url: current.url, alreadyThere: true };
+  }
+
+  await requestJson(
+    `${PROXY}/navigate?target=${encodeURIComponent(targetId)}&url=${encodeURIComponent("https://www.zhipin.com/web/chat/recommend")}`,
+    { timeout: 8000 },
+  );
+  await wait(2200);
+  const navigated = await requestJson(`${PROXY}/info?target=${encodeURIComponent(targetId)}`, { timeout: 3000 }).catch(() => null);
+  if (/\/web\/chat\/recommend/.test(navigated?.url || "")) {
+    return { ok: true, targetId, url: navigated.url, directNavigation: true };
+  }
+
   const raw = await evalTarget(targetId, `JSON.stringify((() => {
     const element = [...document.querySelectorAll('a,button,span,div')]
       .find(el => (el.innerText || el.textContent || '').trim() === '推荐牛人');
@@ -201,7 +236,8 @@ async function gotoRecommend(targetId) {
     await clickSelector(targetId, '[data-recruit-dashboard-nav="recommend"]');
     await wait(1800);
   }
-  return result;
+  const resolved = await findBossTarget();
+  return { ...result, targetId: resolved.targetId, url: resolved.url };
 }
 
 function cardExtractionExpression(jobName) {
@@ -210,25 +246,45 @@ function cardExtractionExpression(jobName) {
     const doc = frame?.contentDocument || document;
     const frameRect = frame ? frame.getBoundingClientRect() : { x: 0, y: 0 };
     const bodyText = doc.body?.innerText || '';
-    const cardSelectors = 'li.card-item,.geek-card,.candidate-card,[class*="geek-card"],[class*="candidate-card"]';
+    const warningPattern = /操作(?:过于)?频繁|账号(?:存在)?异常|检测到异常操作|暂时无法沟通|访问受限|沟通功能受限|账号存在风险/;
+    const visibleNoticeText = [...doc.querySelectorAll(
+      '[role="dialog"],[class*="dialog"],[class*="modal"],[class*="toast"],[class*="notice"],[class*="warning"]'
+    )].filter(el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = doc.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 && style?.display !== 'none' && style?.visibility !== 'hidden';
+    }).map(el => (el.innerText || el.textContent || '').trim()).filter(Boolean);
+    const warningText = visibleNoticeText.find(value => warningPattern.test(value)) || '';
     const invalidName = value => !value || value.length < 2 || value.length > 12 ||
-      /打招呼|立即沟通|继续沟通|已沟通|已联系|推荐|期望|学历|经历|掌握|选择/.test(value) ||
+      /^[+＋]|更多选项|打招呼|立即沟通|继续沟通|已沟通|已联系|推荐|相似|期望|学历|经历|掌握|选择/.test(value) ||
       /本科|硕士|博士|大专|应届|在读|岁|K|面议/.test(value) ||
       value.includes(${JSON.stringify(jobName)});
-    const cards = [...doc.querySelectorAll(cardSelectors)].map((card, index) => {
-      const button = [...card.querySelectorAll('button,a,div,span')]
-        .find(el => /^(打招呼|立即沟通)$/.test((el.innerText || el.textContent || '').trim()));
-      if (!button) return null;
+    const visible = el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = doc.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden';
+    };
+    const isGreetButton = el =>
+      /^(打招呼|立即沟通)$/.test((el.innerText || el.textContent || '').trim()) && visible(el);
+    const buttons = [...doc.querySelectorAll('button,a,div,span')]
+      .filter(isGreetButton)
+      .filter(el => ![...el.querySelectorAll('button,a,div,span')].some(child =>
+        child !== el && isGreetButton(child)));
+    const cards = buttons.map((button, index) => {
+      const card = button.closest('li.card-item,.geek-card,.candidate-card,[class*="card"]');
+      if (!card) return null;
       const lines = (card.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
       const name = lines.find(line => !invalidName(line)) || '';
       const text = lines.join('\\n');
+      if (/为你推荐[\\s\\S]*相似的\\s*\\d*\\s*个?牛人/.test(text) || text.length > 4000) return null;
       const school = (text.match(/([^\\s\\n]+(?:大学|学院|职业技术学院))/) || [])[1] || '';
       const age = (text.match(/(\\d{2})岁/) || [])[1] || '';
       const education = (text.match(/博士|硕士|本科|大专|专科/) || [])[0] || '';
       const expectedCity = (text.match(/期望\\s*\\n?([^\\s\\n]+)/) || [])[1] || '';
       const salary = (text.match(/\\d+\\s*[-~]\\s*\\d+K|\\d+\\s*[-~]\\s*\\d+元[^\\n]*/) || [])[0] || '';
       const rect = button.getBoundingClientRect();
-      const marker = 'candidate_' + index;
+      const marker = 'candidate_' + index + '_' + Math.random().toString(36).slice(2, 8);
       button.setAttribute('data-recruit-dashboard-greet', marker);
       const href = card.querySelector('a[href]')?.href || '';
       const dataId = card.getAttribute('data-geek-id') || card.getAttribute('data-id') || '';
@@ -240,9 +296,11 @@ function cardExtractionExpression(jobName) {
     }).filter(Boolean);
     return {
       cards,
+      greet_control_count: cards.length,
       captcha: /验证码|安全验证|拖动滑块|行为验证|人机验证/.test(bodyText),
       login: /请登录|扫码登录/.test(bodyText) && cards.length === 0,
-      warning: /操作频繁|存在风险|账号异常|平台警告|违规|暂时无法沟通|访问受限/.test(bodyText),
+      warning: Boolean(warningText) || warningPattern.test(bodyText),
+      warning_reason: warningText || (bodyText.match(warningPattern) || [])[0] || '',
       quota: /今日沟通额度.*(?:用完|耗尽)|沟通次数已用完|暂无沟通次数|权益.*耗尽/.test(bodyText)
     };
   })())`;
@@ -256,27 +314,57 @@ async function scrollFeed(targetId) {
   const raw = await evalTarget(targetId, `JSON.stringify((() => {
     const frame = document.querySelector('iframe[name=recommendFrame]');
     const doc = frame?.contentDocument || document;
-    const nodes = [doc.scrollingElement, doc.documentElement, doc.body,
-      ...doc.querySelectorAll('[class*="list"],[class*="scroll"],[class*="recommend"],[class*="content"]')]
-      .filter(Boolean);
+    const nodes = [
+      doc.scrollingElement,
+      doc.documentElement,
+      doc.body,
+      ...doc.querySelectorAll('[class*="list"],[class*="scroll"],[class*="recommend"],[class*="content"]')
+    ].filter(Boolean);
     const target = nodes.find(el => el.scrollHeight > el.clientHeight + 20);
-    if (!target) return { moved: false };
+    if (!target) return { moved: false, reason: 'no_scroll_container' };
     const before = target.scrollTop;
+    const beforeHeight = target.scrollHeight;
     target.scrollBy({ top: Math.max(400, Math.floor(target.clientHeight * .8)), behavior: 'auto' });
-    return { moved: target.scrollTop !== before, before, after: target.scrollTop };
+    return {
+      moved: target.scrollTop !== before || target.scrollHeight !== beforeHeight,
+      before,
+      after: target.scrollTop,
+      before_height: beforeHeight,
+      after_height: target.scrollHeight,
+      target_class: String(target.className || '').slice(0, 160)
+    };
   })())`);
   return JSON.parse(raw);
 }
 
 async function clickCard(targetId, card) {
+  const position = JSON.parse(await evalTarget(targetId, `JSON.stringify((() => {
+    const frame = document.querySelector('iframe[name=recommendFrame]');
+    const doc = frame?.contentDocument || document;
+    const button = doc.querySelector('[data-recruit-dashboard-greet="${String(card.marker).replaceAll('"', '\\"')}"]');
+    if (!button) return { ok: false, reason: 'greet_button_not_found' };
+    button.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
+    const frameRect = frame ? frame.getBoundingClientRect() : { x: 0, y: 0 };
+    const rect = button.getBoundingClientRect();
+    return {
+      ok: rect.width > 0 && rect.height > 0,
+      x: frameRect.x + rect.x + rect.width / 2,
+      y: frameRect.y + rect.y + rect.height / 2,
+      text: (button.innerText || button.textContent || '').trim()
+    };
+  })())`));
+  if (!position.ok || !/^(打招呼|立即沟通)$/.test(position.text || "")) {
+    throw new Error(position.reason || "greet_button_not_clickable");
+  }
+
   const marker = `dashboard-click-${Date.now()}`;
   await evalTarget(targetId, `JSON.stringify((() => {
     document.querySelectorAll('[data-recruit-dashboard-click]').forEach(el => el.remove());
     const el = document.createElement('i');
     el.setAttribute('data-recruit-dashboard-click', ${JSON.stringify(marker)});
     Object.assign(el.style, {
-      position: 'fixed', left: '${Math.round(card.rect.x - 2)}px',
-      top: '${Math.round(card.rect.y - 2)}px', width: '4px', height: '4px',
+      position: 'fixed', left: '${Math.round(position.x - 2)}px',
+      top: '${Math.round(position.y - 2)}px', width: '4px', height: '4px',
       pointerEvents: 'none', zIndex: '2147483647'
     });
     document.documentElement.appendChild(el);
@@ -286,19 +374,146 @@ async function clickCard(targetId, card) {
   await evalTarget(targetId, `document.querySelectorAll('[data-recruit-dashboard-click]').forEach(el => el.remove())`).catch(() => {});
 }
 
-async function confirmGreeting(targetId, index) {
+async function clickCardFallback(targetId, marker) {
+  const raw = await evalTarget(targetId, `JSON.stringify((() => {
+    const frame = document.querySelector('iframe[name=recommendFrame]');
+    const doc = frame?.contentDocument || document;
+    const button = doc.querySelector('[data-recruit-dashboard-greet="${String(marker).replaceAll('"', '\\"')}"]');
+    const text = (button?.innerText || button?.textContent || '').trim();
+    if (!button || !/^(打招呼|立即沟通)$/.test(text)) {
+      return { clicked: false, reason: button ? 'button_state_changed' : 'button_not_found', text };
+    }
+    button.click();
+    return { clicked: true, text };
+  })())`);
+  return JSON.parse(raw);
+}
+
+async function closePostGreetingPrompt(targetId, reason = "post_greet") {
+  const closed = [];
+  let quietRounds = 0;
+
+  // The site may add one prompt per greeting. Drain all visible layers instead
+  // of closing only the most recent one.
+  for (let attempt = 0; attempt < 10 && quietRounds < 2; attempt += 1) {
+    const raw = await evalTarget(targetId, `JSON.stringify((() => {
+      const docs = [document, ...[...document.querySelectorAll('iframe')].map(frame => {
+        try { return frame.contentDocument; } catch { return null; }
+      }).filter(Boolean)];
+      const visible = el => {
+        const rect = el.getBoundingClientRect?.();
+        const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+        return rect && rect.width > 0 && rect.height > 0 &&
+          style?.display !== 'none' && style?.visibility !== 'hidden' &&
+          style?.opacity !== '0' && style?.pointerEvents !== 'none';
+      };
+      const promptPattern = /已发送招呼|招呼已发送|已打招呼|为你推荐[\\s\\S]*相似的\\s*\\d*\\s*个?牛人/;
+      const layerSelector = [
+        '[role="dialog"]', '[class*="dialog"]', '[class*="modal"]',
+        '[class*="popup"]', '[class*="layer"]', '[class*="recommend"]'
+      ].join(',');
+      const preferred = ['不再显示', '知道了', '我知道了', '确定', '关闭'];
+
+      for (const doc of docs) {
+        const layers = [...doc.querySelectorAll(layerSelector)]
+          .filter(visible)
+          .filter(layer => promptPattern.test((layer.innerText || layer.textContent || '').trim()))
+          .sort((a, b) => {
+            const az = Number(a.ownerDocument.defaultView?.getComputedStyle(a).zIndex) || 0;
+            const bz = Number(b.ownerDocument.defaultView?.getComputedStyle(b).zIndex) || 0;
+            return bz - az;
+          });
+        for (const layer of layers) {
+          const context = (layer.innerText || layer.textContent || '').trim();
+          const controls = [...layer.querySelectorAll(
+            'button,a,[role="button"],[aria-label],[title],[class*="close"],i,svg'
+          )].filter(visible);
+          const textOf = el => (
+            el.innerText || el.textContent || el.getAttribute?.('aria-label') ||
+            el.getAttribute?.('title') || ''
+          ).trim();
+
+          for (const label of preferred) {
+            const control = controls.find(el => textOf(el) === label);
+            if (control) {
+              control.click();
+              return {
+                closed: true,
+                button_text: label,
+                reason: ${JSON.stringify(reason)},
+                prompt_text: context.slice(0, 200)
+              };
+            }
+          }
+
+          const closeControl = controls.find(el => {
+            const signature = [
+              textOf(el), el.className?.baseVal || el.className || '',
+              el.getAttribute?.('data-icon') || ''
+            ].join(' ');
+            return /关闭|close|icon-close|dialog-close|modal-close/i.test(signature);
+          });
+          if (closeControl) {
+            closeControl.click();
+            return {
+              closed: true,
+              button_text: 'close_icon',
+              reason: ${JSON.stringify(reason)},
+              prompt_text: context.slice(0, 200)
+            };
+          }
+        }
+      }
+      return { closed: false, reason: ${JSON.stringify(reason)} };
+    })())`);
+    const result = JSON.parse(raw);
+    if (result.closed) {
+      closed.push(result);
+      quietRounds = 0;
+      await wait(350);
+    } else {
+      quietRounds += 1;
+      await wait(250);
+    }
+  }
+
+  return {
+    closed: closed.length > 0,
+    count: closed.length,
+    reason,
+    prompts: closed,
+  };
+}
+
+async function confirmGreeting(targetId, marker) {
   await wait(1000);
   const raw = await evalTarget(targetId, `JSON.stringify((() => {
     const frame = document.querySelector('iframe[name=recommendFrame]');
     const doc = frame?.contentDocument || document;
-    const cards = doc.querySelectorAll('li.card-item,.geek-card,.candidate-card,[class*="geek-card"],[class*="candidate-card"]');
-    const text = cards[${Number(index)}]?.innerText || '';
-    const body = doc.body?.innerText || '';
+    const docs = [document, ...(frame?.contentDocument ? [frame.contentDocument] : [])];
+    const button = doc.querySelector('[data-recruit-dashboard-greet="${String(marker).replaceAll('"', '\\"')}"]');
+    const card = button?.closest('li.card-item,.geek-card,.candidate-card,[class*="geek-card"],[class*="candidate-card"]');
+    const text = card?.innerText || '';
+    const body = docs.map(item => item.body?.innerText || '').join('\\n');
+    const visible = el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden';
+    };
+    const promptVisible = docs.flatMap(item => [...item.querySelectorAll('button,a,[role="button"],div,span')])
+      .some(el => visible(el) && /^(不再显示|知道了|我知道了)$/.test((el.innerText || el.textContent || '').trim()) &&
+        /已发送招呼|招呼已发送|已打招呼|为你推荐[\\s\\S]*相似的\\s*\\d*\\s*个?牛人/.test(
+          (el.closest('[role="dialog"],[class*="dialog"],[class*="modal"],[class*="popup"],[class*="layer"],[class*="recommend"]')?.innerText || body)
+        ));
+    const stateChanged = !button || /继续沟通|已沟通|已联系/.test(text) ||
+      !/打招呼|立即沟通/.test((button.innerText || button.textContent || '').trim());
     return {
-      ok: /继续沟通|已沟通|已联系/.test(text) || !/打招呼|立即沟通/.test(text),
+      ok: stateChanged || promptVisible,
+      prompt_visible: promptVisible,
       quota: /沟通次数已用完|暂无沟通次数|权益.*耗尽/.test(body),
       captcha: /验证码|安全验证|拖动滑块|行为验证/.test(body),
-      warning: /操作频繁|存在风险|账号异常|平台警告|暂时无法沟通/.test(body)
+      warning: /操作(?:过于)?频繁|账号(?:存在)?异常|检测到异常操作|暂时无法沟通|访问受限|沟通功能受限|账号存在风险/.test(body)
     };
   })())`);
   return JSON.parse(raw);
@@ -343,7 +558,7 @@ function throwIfStopped() {
 function checkSafety(data) {
   if (data.captcha) throw new Error("paused_captcha_detected");
   if (data.login) throw new Error("paused_boss_not_logged_in");
-  if (data.warning) throw new Error("paused_platform_warning");
+  if (data.warning) throw new Error(`paused_platform_warning${data.warning_reason ? `:${data.warning_reason.slice(0, 120)}` : ""}`);
   if (data.quota) throw new Error("paused_boss_contact_quota_exhausted");
 }
 
@@ -398,6 +613,8 @@ async function runBatch(targetId, batch) {
 
   while (batchPassed < batch.target && scansThisBatch < maxScans) {
     throwIfStopped();
+    const stalePrompt = await closePostGreetingPrompt(targetId, "before_scan");
+    if (stalePrompt.closed) updateState({}, "post_greet_prompt_closed");
     const health = await inspectPage(targetId);
     checkSafety(health);
     const data = await readCards(targetId, JOB_NAME);
@@ -405,9 +622,24 @@ async function runBatch(targetId, batch) {
 
     const rawCard = (data.cards || []).find((card) => card.name && !attempted.has(candidateId(card)));
     if (!rawCard) {
+      if ((data.greet_control_count || 0) > 0 && (data.cards || []).length === 0) {
+        appendJsonl(runLogFile(), {
+          timestamp: now(),
+          run_id: activeTask.state.run_id,
+          event: "candidate_card_extraction_empty",
+          visible_greet_controls: data.greet_control_count,
+        });
+      }
       if (scrollRounds >= 20) break;
       const moved = await scrollFeed(targetId);
       scrollRounds += 1;
+      appendJsonl(runLogFile(), {
+        timestamp: now(),
+        run_id: activeTask.state.run_id,
+        event: "candidate_feed_scroll",
+        round: scrollRounds,
+        ...moved,
+      });
       if (!moved.moved && scrollRounds >= 3) break;
       await wait(900);
       continue;
@@ -449,9 +681,23 @@ async function runBatch(targetId, batch) {
 
     try {
       await clickCard(targetId, rawCard);
-      const confirmation = await confirmGreeting(targetId, rawCard.index);
+      let confirmation = await confirmGreeting(targetId, rawCard.marker);
       checkSafety(confirmation);
+      if (!confirmation.ok) {
+        const fallback = await clickCardFallback(targetId, rawCard.marker);
+        appendJsonl(runLogFile(), {
+          timestamp: now(),
+          run_id: activeTask.state.run_id,
+          event: "greet_click_fallback",
+          candidate_id: id,
+          ...fallback,
+        });
+        if (fallback.clicked) confirmation = await confirmGreeting(targetId, rawCard.marker);
+        checkSafety(confirmation);
+      }
       if (!confirmation.ok) throw new Error("greet_no_state_change");
+      const prompt = await closePostGreetingPrompt(targetId, "after_greet");
+      if (prompt.closed) updateState({}, "post_greet_prompt_closed");
       activeTask.processed.add(id);
       activeTask.processed.add(legacyId);
       rememberDirectContact(candidate, legacyId);
@@ -477,9 +723,10 @@ async function execute(options) {
   try {
     const preflightResult = await preflight({ ignoreActiveTask: true });
     if (!preflightResult.ok) throw new Error(preflightResult.errors[0] || "preflight_failed");
-    const target = await findBossTarget();
-    await gotoRecommend(target.targetId);
-    checkSafety(await inspectPage(target.targetId));
+    const initialTarget = await findBossTarget();
+    const recommendTarget = await gotoRecommend(initialTarget.targetId);
+    const targetId = recommendTarget.targetId || initialTarget.targetId;
+    checkSafety(await inspectPage(targetId));
 
     for (const batch of activeTask.state.batch_plan) {
       throwIfStopped();
@@ -488,7 +735,7 @@ async function execute(options) {
         current_batch: batch.number,
         remaining_batches: activeTask.state.batch_plan.length - batch.number,
       }, "batch_start");
-      await runBatch(target.targetId, batch);
+      await runBatch(targetId, batch);
       updateState({}, "batch_complete");
       const reached = options.mode === "real-run"
         ? activeTask.state.counters.greeted >= options.dailyTarget
@@ -539,15 +786,17 @@ export async function preflight({ ignoreActiveTask = false } = {}) {
     !runnerLock.active || runnerLock.pid === process.pid ? "推荐任务锁可用" : `run_lock_exists:${runnerLock.pid}`);
   add("legacy_pipeline_lock", !pipelineLock.active,
     !pipelineLock.active ? "旧链路任务锁可用" : `legacy_pipeline_active:${pipelineLock.pid}`);
-  add("legacy_boss_lock", !legacyLock.active,
-    !legacyLock.active ? "旧 Boss 自动化未运行" : `legacy_boss_run_active:${legacyLock.pid}`);
+  const legacyLockAvailable = !legacyLock.active || (ignoreActiveTask && legacyLock.pid === process.pid);
+  add("legacy_boss_lock", legacyLockAvailable,
+    legacyLockAvailable ? "Boss 页面操作锁可用" : `legacy_boss_run_active:${legacyLock.pid}`);
   try {
     const target = await findBossTarget();
     add("cdp", true, `${PROXY}, target=${target.targetId}`);
     const page = await inspectPage(target.targetId);
     add("boss_login", !page.login, page.login ? "paused_boss_not_logged_in" : "Boss 已登录");
     add("captcha", !page.captcha, page.captcha ? "paused_captcha_detected" : "未发现验证码");
-    add("platform_warning", !page.warning, page.warning ? "paused_platform_warning" : "未发现平台警告");
+    add("platform_warning", !page.warning,
+      page.warning ? `paused_platform_warning:${page.warning_reason || "检测到明确的平台限制提示"}` : "未发现平台警告");
   } catch (error) {
     add("cdp", false, String(error.message || error));
   }

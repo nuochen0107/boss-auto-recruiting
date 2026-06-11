@@ -9,93 +9,142 @@
 <body>
   <main class="shell">
     <header>
-      <div>
-        <p class="eyebrow">LOCAL RECRUITING CONSOLE</p>
-        <h1>Boss 招聘控制面板</h1>
-        <p class="subtitle">AI应用实习生 · 推荐触达、沟通、收简历与飞书同步</p>
-      </div>
+      <h1>Boss 招聘控制面板</h1>
       <div id="serviceBadge" class="badge neutral">服务检查中</div>
     </header>
 
-    <section class="panel">
-      <div class="section-title">
-        <div><p class="eyebrow">RECOMMEND TASK</p><h2>推荐牛人页打招呼</h2></div>
-        <button id="preflightBtn" class="button secondary">运行前检查</button>
-      </div>
-      <div class="form-grid">
-        <label>岗位选择
-          <select id="jobId"><option value="ai_app_intern">AI应用实习生</option></select>
-        </label>
-        <label class="wide">今日打招呼目标 <span id="targetValue">20</span>
-          <div class="range-row">
-            <input id="dailyTarget" type="range" min="1" max="200" value="20">
-            <input id="dailyTargetNumber" type="number" min="1" max="200" value="20">
-          </div>
-        </label>
-        <label>每批最大触达数
-          <input id="batchSize" type="number" min="1" max="50" value="50">
-        </label>
-        <label>批次间隔分钟数
-          <input id="batchIntervalMinutes" type="number" min="0" max="1440" step="0.5" value="30">
-        </label>
-        <fieldset class="wide">
-          <legend>运行模式</legend>
-          <label class="radio"><input type="radio" name="mode" value="dry-run" checked> dry-run（只扫描，不点击）</label>
-          <label class="radio danger"><input type="radio" name="mode" value="real-run"> real-run（真实打招呼）</label>
-        </fieldset>
-      </div>
-      <div class="actions">
-        <button id="startBtn" class="button primary">开始任务</button>
-        <button id="pauseBtn" class="button danger-button">暂停任务</button>
-        <button id="statusBtn" class="button secondary">查看状态</button>
-        <button id="reportBtn" class="button secondary">查看今日报告</button>
-      </div>
-      <div id="notice" class="notice">等待操作</div>
-    </section>
-
-    <section class="metrics">
-      <article><span>任务状态</span><strong id="status">idle</strong></article>
-      <article><span>已扫描</span><strong id="scanned">0</strong></article>
-      <article><span>待触达</span><strong id="eligible">0</strong></article>
-      <article><span>已打招呼</span><strong id="greeted">0</strong></article>
-      <article><span>跳过</span><strong id="skipped">0</strong></article>
-      <article><span>失败</span><strong id="failed">0</strong></article>
-      <article><span>当前批次</span><strong id="currentBatch">0</strong></article>
-      <article><span>剩余批次</span><strong id="remainingBatches">0</strong></article>
-    </section>
-
-    <section class="panel">
+    <section class="panel primary-panel">
       <div class="section-title">
         <div>
-          <p class="eyebrow">LEGACY PIPELINE</p>
-          <h2>沟通、收简历与飞书同步</h2>
+          <p class="step-label">日常招聘流程</p>
+          <h2>沟通、收简历、同步飞书</h2>
         </div>
-        <button id="pipelineStatusBtn" class="button secondary">刷新旧链路状态</button>
+        <button id="pipelineStatusBtn" class="button secondary">刷新状态</button>
       </div>
-      <p class="subtitle">复用原有脚本。运行模式沿用上方 dry-run / real-run；完整链路严格串行，任一步失败即停止。</p>
+
+      <fieldset class="mode-picker">
+        <legend>执行方式</legend>
+        <label class="radio"><input type="radio" name="mode" value="dry-run" checked> 演练模式（不发送、不下载、不上传）</label>
+        <label class="radio danger"><input type="radio" name="mode" value="real-run"> 真实执行</label>
+      </fieldset>
+
+      <div class="workflow-grid">
+        <article class="workflow-card">
+          <span class="step-number">1</span>
+          <h3>处理沟通页</h3>
+          <p>只检查沟通列表，并向尚未索要简历的候选人发送一次消息。</p>
+          <button class="button secondary pipeline-start" data-pipeline="chat">开始处理沟通页</button>
+        </article>
+        <article class="workflow-card">
+          <span class="step-number">2</span>
+          <h3>收取简历</h3>
+          <p>只处理候选人已经发送的附件简历，并保存到本地。</p>
+          <button class="button secondary pipeline-start" data-pipeline="collect">开始收取简历</button>
+        </article>
+        <article class="workflow-card">
+          <span class="step-number">3</span>
+          <h3>同步飞书招聘</h3>
+          <p>将本地简历同步到指定岗位，测试时建议每次只处理 1 人。</p>
+          <button class="button secondary pipeline-start" data-pipeline="sync">开始同步飞书</button>
+        </article>
+      </div>
+
+      <div class="form-grid compact-grid">
+        <label>本次最多沟通人数
+          <input id="chatLimit" type="number" min="1" max="200" value="20">
+        </label>
+        <label>本次最多收取简历人数
+          <input id="collectLimit" type="number" min="1" max="200" value="50">
+        </label>
+        <label>飞书招聘岗位 ID
+          <input id="feishuJobId" type="text" inputmode="numeric" placeholder="例如 7631918421475477802">
+        </label>
+        <label>本次最多同步人数
+          <input id="syncLimit" type="number" min="1" max="50" value="1">
+        </label>
+      </div>
+
       <div class="actions">
-        <button class="button secondary pipeline-start" data-pipeline="chat">1. 处理沟通页并求简历</button>
-        <button class="button secondary pipeline-start" data-pipeline="collect">2. 收取简历附件</button>
-        <button class="button secondary pipeline-start" data-pipeline="sync">3. 同步飞书招聘</button>
-        <button class="button primary pipeline-start" data-pipeline="full">运行完整旧链路</button>
-        <button id="pipelinePauseBtn" class="button danger-button">暂停旧链路</button>
+        <button class="button primary pipeline-start" data-pipeline="full">依次执行以上三步</button>
+        <button id="pipelinePauseBtn" class="button danger-button">暂停当前流程</button>
       </div>
-      <div id="pipelineNotice" class="notice">旧链路等待操作</div>
-      <div class="pipeline-summary">
-        <span>状态：<strong id="pipelineStatus">idle</strong></span>
-        <span>当前阶段：<strong id="pipelineStage">-</strong></span>
+      <div id="pipelineNotice" class="notice">当前没有运行中的流程</div>
+      <div class="status-row">
+        <span>状态：<strong id="pipelineStatus">空闲</strong></span>
+        <span>当前步骤：<strong id="pipelineStage">-</strong></span>
         <span>进度：<strong id="pipelineProgress">0 / 0</strong></span>
       </div>
     </section>
 
     <section class="panel">
-      <div class="section-title compact"><div><p class="eyebrow">RECOMMEND DETAILS</p><h2 id="detailTitle">推荐任务详情</h2></div></div>
-      <pre id="details">暂无数据</pre>
+      <div class="section-title">
+        <div>
+          <p class="step-label">主动触达</p>
+          <h2>推荐牛人页打招呼</h2>
+        </div>
+      </div>
+      <p class="section-help">执行方式使用页面顶部选择的“演练模式”或“真实执行”。</p>
+      <div class="form-grid">
+        <label>岗位
+          <select id="jobId"><option value="ai_app_intern">AI应用实习生</option></select>
+        </label>
+        <label>今日目标人数
+          <div class="range-row">
+            <input id="dailyTarget" type="range" min="1" max="200" value="20">
+            <input id="dailyTargetNumber" type="number" min="1" max="200" value="20">
+          </div>
+        </label>
+        <label>每批人数
+          <input id="batchSize" type="number" min="1" max="50" value="50">
+        </label>
+        <label>批次间隔（分钟）
+          <input id="batchIntervalMinutes" type="number" min="0" max="1440" step="0.5" value="30">
+        </label>
+      </div>
+      <div class="actions">
+        <button id="startBtn" class="button primary">开始推荐页任务</button>
+        <button id="pauseBtn" class="button danger-button">暂停推荐页任务</button>
+        <button id="reportBtn" class="button secondary">查看今日报告</button>
+      </div>
+      <div id="notice" class="notice">当前没有运行中的推荐页任务</div>
+      <div class="metrics">
+        <article><span>状态</span><strong id="status">空闲</strong></article>
+        <article><span>已扫描</span><strong id="scanned">0</strong></article>
+        <article><span>待触达</span><strong id="eligible">0</strong></article>
+        <article><span>已打招呼</span><strong id="greeted">0</strong></article>
+        <article><span>已跳过</span><strong id="skipped">0</strong></article>
+        <article><span>失败</span><strong id="failed">0</strong></article>
+      </div>
     </section>
 
     <section class="panel">
-      <div class="section-title compact"><div><p class="eyebrow">PIPELINE DETAILS</p><h2>旧链路详情</h2></div></div>
-      <pre id="pipelineDetails">暂无数据</pre>
+      <div class="section-title">
+        <div>
+          <p class="step-label">运行准备</p>
+          <h2>环境检查</h2>
+        </div>
+        <div class="actions inline-actions">
+          <button id="proxyBtn" class="button secondary">启动浏览器连接</button>
+          <button id="preflightBtn" class="button primary">立即检查</button>
+        </div>
+      </div>
+      <div id="preflightChecks" class="check-list">
+        <div class="check-card neutral"><strong>尚未检查</strong><p>执行任务前，请先点击“立即检查”。</p></div>
+      </div>
+    </section>
+
+    <section class="panel details-panel">
+      <div class="section-title compact"><h2>任务记录</h2></div>
+      <div class="detail-grid">
+        <details>
+          <summary>日常招聘流程详情</summary>
+          <pre id="pipelineDetails">暂无数据</pre>
+        </details>
+        <details>
+          <summary id="detailTitle">推荐页任务详情</summary>
+          <pre id="details">暂无数据</pre>
+        </details>
+      </div>
     </section>
   </main>
   <script type="module" src="/app.js"></script>

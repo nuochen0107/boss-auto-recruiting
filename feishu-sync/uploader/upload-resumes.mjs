@@ -4,11 +4,15 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const FEISHU_API = "https://open.feishu.cn/open-apis";
-const DEFAULT_RESUME_DIR = "/Users/apple/boss-auto-recruiting/data/resumes";
-const DEFAULT_STATE_FILE = "/Users/apple/boss-auto-recruiting/data/briefs/feishu-hire-sync-state.json";
-const CONTACT_EXTRACTOR = "/Users/apple/boss-auto-recruiting/feishu-sync/uploader/scripts/extract_resume_contacts.py";
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(MODULE_DIR, "../..");
+const DATA_ROOT = path.resolve(process.env.BOSS_DATA_ROOT || path.join(PROJECT_ROOT, "data"));
+const DEFAULT_RESUME_DIR = path.join(DATA_ROOT, "resumes");
+const DEFAULT_STATE_FILE = path.join(DATA_ROOT, "briefs/feishu-hire-sync-state.json");
+const CONTACT_EXTRACTOR = path.join(MODULE_DIR, "scripts/extract_resume_contacts.py");
 const RESUME_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".rtf", ".wps"]);
 
 class FeishuApiError extends Error {
@@ -35,6 +39,7 @@ function parseArgs(argv) {
     state: process.env.FEISHU_HIRE_UPLOAD_STATE || DEFAULT_STATE_FILE,
     manifest: process.env.FEISHU_HIRE_CANDIDATE_MANIFEST || "",
     mode: process.env.FEISHU_HIRE_UPLOAD_MODE || "talent_application",
+    limit: 0,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -45,6 +50,7 @@ function parseArgs(argv) {
     else if (arg === "--state") args.state = argv[++i];
     else if (arg === "--manifest") args.manifest = argv[++i];
     else if (arg === "--mode") args.mode = argv[++i];
+    else if (arg === "--limit") args.limit = Math.max(0, Number(argv[++i]) || 0);
     else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -59,7 +65,7 @@ function parseArgs(argv) {
 function printHelp() {
   console.log(`
 Usage:
-  node upload-resumes.mjs [--dry-run] [--apply] [--dir DIR] [--manifest FILE]
+  node upload-resumes.mjs [--dry-run] [--apply] [--dir DIR] [--manifest FILE] [--limit N]
 
 Modes:
   talent_application Upload resume, create or reuse talent, create job application.
@@ -113,6 +119,19 @@ function normalizeLookupKey(value) {
 function normalizeIdentityText(value) {
   if (typeof value !== "string") return "";
   return value.normalize("NFKC").replace(/\s+/g, "").trim().toLowerCase();
+}
+
+function educationSchoolNames(educationList = []) {
+  return Array.from(new Set(educationList
+    .flatMap((item) => [item?.school, item?.school_name, item?.college_name])
+    .filter(Boolean)
+    .map((item) => String(item).trim())));
+}
+
+function schoolHintFromText(value) {
+  const text = String(value || "").trim();
+  const matches = text.match(/[\u4e00-\u9fffA-Za-z0-9·（）() -]{2,40}(?:大学|学院)/g) || [];
+  return matches.map((item) => item.replace(/^(?:您好|你好|Boss您好|BOSS您好|我是|我来自)+[，,、：:\\s]*/i, "").trim()).filter(Boolean);
 }
 
 function normalizeIdentificationType(value) {
@@ -418,13 +437,15 @@ async function ensureSafeTalentReuse(token, talentId, meta) {
     );
   }
 
-  const expectedSchool = normalizeIdentityText(meta.school);
-  if (!expectedSchool) return;
+  const expectedSchools = educationSchoolNames(meta.education_list);
+  if (!expectedSchools.length) expectedSchools.push(...schoolHintFromText(meta.school));
+  const normalizedExpectedSchools = expectedSchools.map((item) => normalizeIdentityText(item)).filter(Boolean);
+  if (!normalizedExpectedSchools.length) return;
 
   const actualSchools = talent.schools.map((item) => normalizeIdentityText(item)).filter(Boolean);
-  if (!actualSchools.length || !actualSchools.includes(expectedSchool)) {
+  if (!actualSchools.length || !normalizedExpectedSchools.some((school) => actualSchools.includes(school))) {
     throw new ManualReviewRequiredError(
-      `Existing talent ${talentId} school mismatch: expected "${meta.school}", got "${talent.schools.join(" / ") || "unknown"}"`,
+      `Existing talent ${talentId} school mismatch: expected "${expectedSchools.join(" / ")}", got "${talent.schools.join(" / ") || "unknown"}"`,
     );
   }
 }
@@ -588,8 +609,12 @@ function parseExtractorResult(stdout, filePath) {
 }
 
 function extractContactsFromResume(filePath) {
-  const result = spawnSync("python3", [CONTACT_EXTRACTOR, filePath], {
+  const bundledExtractor = process.env.BOSS_RESUME_EXTRACTOR || "";
+  const command = bundledExtractor || process.env.BOSS_PYTHON || "python3";
+  const args = bundledExtractor ? [filePath] : [CONTACT_EXTRACTOR, filePath];
+  const result = spawnSync(command, args, {
     encoding: "utf8",
+    env: { ...process.env },
   });
 
   if (result.error) throw result.error;
@@ -864,7 +889,7 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
   if (args.mode === "talent_enrich") {
     if (!existing?.talent?.talent_id) {
       console.log(`SKIP no existing talent for ${path.basename(filePath)}`);
-      return;
+      return { counted: false };
     }
 
     const extracted = extractContactsFromResume(filePath);
@@ -872,12 +897,12 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
     const { contact, hasContact } = mergeExtractedContacts(meta, extracted);
     if (!hasContact) {
       console.log(`SKIP no contact fields found: ${path.basename(filePath)}`);
-      return;
+      return { counted: false };
     }
 
     if (!args.apply) {
       console.log(`DRY-RUN ENRICH ${path.basename(filePath)} candidate=${meta.name} mobile=${contact.mobile || "-"} email=${contact.email || "-"}`);
-      return;
+      return { counted: true };
     }
 
     const update = await updateExistingTalent(token, existing.talent.talent_id, meta, existing.attachment_id, extracted);
@@ -893,12 +918,16 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
     state.files[fingerprint] = result;
     if (normalizedIdentity) stateIndex.set(normalizedIdentity, result);
     console.log(`ENRICHED ${path.basename(filePath)} -> talent=${existing.talent.talent_id}`);
-    return;
+    return { counted: true };
   }
 
   if (existing?.status === "success") {
     console.log(`SKIP already uploaded: ${path.basename(filePath)} -> ${existing.mode}`);
-    return;
+    return { counted: false };
+  }
+  if (existing?.status === "needs_manual_review") {
+    console.log(`SKIP needs manual review: ${path.basename(filePath)} -> ${existing.error || "identity conflict"}`);
+    return { counted: false };
   }
 
   let meta = baseMeta;
@@ -959,7 +988,7 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
       size: stat.size,
       updated_at: new Date().toISOString(),
     };
-    return;
+    return { counted: true };
   }
 
   const attachment = await uploadAttachment(token, filePath);
@@ -1015,6 +1044,7 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
 
   state.files[fingerprint] = result;
   if (normalizedIdentity) stateIndex.set(normalizedIdentity, result);
+  return { counted: true };
 }
 
 async function main() {
@@ -1032,13 +1062,19 @@ async function main() {
 
   const token = args.apply ? await getTenantAccessToken() : "";
   let failed = 0;
+  let manualReview = 0;
+  let attempted = 0;
 
   for (const filePath of files) {
+    if (args.limit > 0 && attempted >= args.limit) break;
     try {
-      await processFile({ args, token, state, manifest, stateIndex, filePath });
+      const outcome = await processFile({ args, token, state, manifest, stateIndex, filePath });
+      if (outcome?.counted !== false) attempted += 1;
       await writeJson(args.state, state);
     } catch (error) {
-      failed += 1;
+      attempted += 1;
+      if (error instanceof ManualReviewRequiredError) manualReview += 1;
+      else failed += 1;
       console.error(`FAIL ${path.basename(filePath)}: ${error.message}`);
       const hash = await sha256File(filePath);
       const meta = findCandidateMeta(manifest, filePath, hash);
@@ -1057,11 +1093,17 @@ async function main() {
         updated_at: new Date().toISOString(),
       };
       await writeJson(args.state, state);
+      if (error instanceof FeishuApiError && error.body?.code === 99991672) {
+        console.error("FATAL missing Feishu application permission; stop this run before processing more resumes");
+        break;
+      }
     }
   }
 
   const success = Object.values(state.files).filter((item) => item.status === "success").length;
-  console.log(`Finished. discovered=${discoveredFiles.length} selected=${files.length} total_success=${success} failed_this_run=${failed} state=${args.state}`);
+  const status = failed > 0 ? "failed" : manualReview > 0 ? "completed_partial" : "completed";
+  console.log(`Finished. discovered=${discoveredFiles.length} attempted=${attempted} total_success=${success} manual_review_this_run=${manualReview} failed_this_run=${failed} state=${args.state}`);
+  console.log(JSON.stringify({ status, discovered: discoveredFiles.length, attempted, total_success: success, manual_review_this_run: manualReview, failed_this_run: failed, state: args.state }));
 
   if (failed > 0) process.exitCode = 1;
 }
