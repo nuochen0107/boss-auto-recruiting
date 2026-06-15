@@ -77,6 +77,7 @@ echo "复制应用代码..."
   "$ROOT/" "$PROJECT_DIR/"
 
 cp "$ROOT/packaging/macos/default-config.yaml" "$RESOURCES_DIR/defaults/default-config.yaml"
+cp "$ROOT/config/jobs.json" "$RESOURCES_DIR/defaults/jobs.json"
 cp "$ROOT/packaging/macos/default-config.yaml" "$PROJECT_DIR/boss-loop/assets/default-config.yaml"
 cp "$ROOT/packaging/macos/launcher.sh" "$CONTENTS_DIR/MacOS/BossRecruiting"
 chmod 755 "$CONTENTS_DIR/MacOS/BossRecruiting" "$RUNTIME_DIR/bin/"*

@@ -46,5 +46,6 @@ dist/Boss招聘助手-macOS-arm64.zip
 ~/Library/Application Support/BossRecruiting
 ```
 
-其中 `config/feishu.env` 保存飞书配置，`data/resumes` 保存简历，
+其中 `config/jobs.json` 保存 Boss 岗位到飞书岗位的路由，
+`config/feishu.env` 保存飞书配置，`data/resumes/<job_key>` 按岗位保存简历，
 `logs` 保存面板和浏览器连接日志。

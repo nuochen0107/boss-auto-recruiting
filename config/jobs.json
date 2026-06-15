@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "job_key": "ai_app_intern",
+      "display_name": "AI应用实习生",
+      "boss_job_names": [
+        "AI应用实习生"
+      ],
+      "feishu_hire_job_id": "7631918421475477802",
+      "enabled": true
+    },
+    {
+      "job_key": "ai_native_game_intern",
+      "display_name": "AI Native游戏开发实习生",
+      "boss_job_names": [
+        "AI Native游戏开发实习生",
+        "AI native游戏开发实习生",
+        "AI原生游戏开发实习生"
+      ],
+      "feishu_hire_job_id": "",
+      "enabled": true
+    }
+  ]
+}

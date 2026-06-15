@@ -15,6 +15,9 @@ mkdir -p "$CONFIG_DIR" "$DATA_DIR/briefs" "$DATA_DIR/candidates" "$DATA_DIR/resu
 if [ ! -f "$CONFIG_DIR/default-config.yaml" ]; then
   cp "$RESOURCES_DIR/defaults/default-config.yaml" "$CONFIG_DIR/default-config.yaml"
 fi
+if [ ! -f "$CONFIG_DIR/jobs.json" ]; then
+  cp "$RESOURCES_DIR/defaults/jobs.json" "$CONFIG_DIR/jobs.json"
+fi
 if [ ! -f "$CONFIG_DIR/feishu.env" ] && [ -f "$RESOURCES_DIR/defaults/feishu.env" ]; then
   cp "$RESOURCES_DIR/defaults/feishu.env" "$CONFIG_DIR/feishu.env"
   chmod 600 "$CONFIG_DIR/feishu.env"
@@ -24,6 +27,7 @@ export PATH="$RUNTIME_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export BOSS_DATA_ROOT="$DATA_DIR"
 export BOSS_CONFIG_ROOT="$CONFIG_DIR"
 export BOSS_CONFIG_FILE="$CONFIG_DIR/default-config.yaml"
+export BOSS_JOBS_FILE="$CONFIG_DIR/jobs.json"
 export FEISHU_ENV_FILE="$CONFIG_DIR/feishu.env"
 export BOSS_RESUME_EXTRACTOR="$RUNTIME_DIR/bin/resume-extractor"
 export BOSS_VISION_OCR_BIN="$RUNTIME_DIR/bin/boss-vision-ocr"

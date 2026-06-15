@@ -4,17 +4,25 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { getCurrentRun, getTodayReport, pauseRun, preflight, startRun } from "../orchestrator/recommend_greet_runner.mjs";
 import { getLegacyRun, pauseLegacyRun, startLegacyRun } from "../orchestrator/legacy_pipeline_runner.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(DIR, "..");
+const require = createRequire(import.meta.url);
+const { enabledJobs, loadJobsConfig } = require("../config/job-router.cjs");
 const PUBLIC_DIR = path.join(DIR, "public");
 const PORT = Number(process.env.BOSS_DASHBOARD_PORT || 8787);
 const HOST = process.env.BOSS_DASHBOARD_HOST || "127.0.0.1";
 const PROXY_URL = (process.env.CDP_PROXY_URL || "http://127.0.0.1:3456").replace(/\/$/, "");
 const PROXY_SCRIPT = path.join(PROJECT_ROOT, "deps/web-access/scripts/cdp-proxy.mjs");
+const RESUME_DIR = path.join(PROJECT_ROOT, "data/resumes");
+const FEISHU_SYNC_STATES = [
+  path.join(PROJECT_ROOT, "data/runs/feishu-hire-multi-job-state.json"),
+  path.join(PROJECT_ROOT, "data/briefs/feishu-hire-sync-state.json"),
+];
 let proxyProcess = null;
 
 function sendJson(res, value, status = 200) {
@@ -171,12 +179,59 @@ async function startProxy() {
   };
 }
 
+function cleanupUploadedResumes() {
+  let deleted = 0;
+  let bytesFreed = 0;
+  let retained = 0;
+  const cleanedFiles = new Set();
+
+  for (const stateFile of FEISHU_SYNC_STATES) {
+    if (!fs.existsSync(stateFile)) continue;
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    let changed = false;
+    for (const record of Object.values(state.files || {})) {
+      const verified = record?.status === "success"
+        && record?.talent?.talent_id
+        && (record?.application?.application_id || record?.application?.duplicate);
+      const file = record?.file ? path.resolve(record.file) : "";
+      const insideResumeDir = file && (file === RESUME_DIR || file.startsWith(`${RESUME_DIR}${path.sep}`));
+      if (!verified || !insideResumeDir || cleanedFiles.has(file)) {
+        if (file && fs.existsSync(file)) retained += 1;
+        continue;
+      }
+      if (fs.existsSync(file) && fs.statSync(file).isFile()) {
+        const size = fs.statSync(file).size;
+        fs.unlinkSync(file);
+        deleted += 1;
+        bytesFreed += size;
+      }
+      cleanedFiles.add(file);
+      record.local_file_deleted = true;
+      record.local_file_deleted_at ||= new Date().toISOString();
+      changed = true;
+    }
+    if (changed) fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+  }
+  return { ok: true, deleted, bytes_freed: bytesFreed, retained };
+}
+
 async function api(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/health") {
     return sendJson(res, { ok: true, service: "boss-recruiting-dashboard", timestamp: new Date().toISOString(), scoringEnabled: false });
   }
   if (req.method === "GET" && url.pathname === "/api/preflight") {
     return sendJson(res, await detailedPreflight());
+  }
+  if (req.method === "GET" && url.pathname === "/api/jobs") {
+    const config = loadJobsConfig(PROJECT_ROOT);
+    return sendJson(res, {
+      version: config.version,
+      file: config.file,
+      jobs: enabledJobs(config).map((job) => ({
+        ...job,
+        feishu_configured: /^\d+$/.test(job.feishu_hire_job_id),
+      })),
+    });
   }
   if (req.method === "POST" && url.pathname === "/api/proxy/start") return sendJson(res, await startProxy(), 202);
   if (req.method === "POST" && url.pathname === "/api/runs/start") return sendJson(res, await startRun(await body(req)), 202);
@@ -185,6 +240,9 @@ async function api(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/runs/report/today") return sendJson(res, getTodayReport());
   if (req.method === "POST" && url.pathname === "/api/pipeline/start") return sendJson(res, startLegacyRun(await body(req)), 202);
   if (req.method === "POST" && url.pathname === "/api/pipeline/pause") return sendJson(res, pauseLegacyRun());
+  if (req.method === "POST" && url.pathname === "/api/resumes/cleanup-uploaded") {
+    return sendJson(res, cleanupUploadedResumes());
+  }
   if (req.method === "GET" && url.pathname === "/api/pipeline/current") return sendJson(res, getLegacyRun());
   return sendJson(res, { error: "not_found" }, 404);
 }

@@ -3,10 +3,13 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { buildBatchPlan, normalizeRunOptions } from "./quota_scheduler.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(import.meta.url);
+const { findJobByKey, loadJobsConfig } = require("../config/job-router.cjs");
 const DATA_DIR = path.resolve(process.env.BOSS_DATA_ROOT || path.join(ROOT, "data"));
 const RUN_DIR = path.join(DATA_DIR, "runs");
 const CANDIDATE_DIR = path.join(DATA_DIR, "candidates");
@@ -20,7 +23,6 @@ const PROXY = (process.env.CDP_PROXY_URL || "http://127.0.0.1:3456").replace(/\/
 const MAX_CONSECUTIVE_FAILURES = Math.max(1, Number(process.env.BOSS_MAX_CONSECUTIVE_FAILURES || 3));
 const GREET_DELAY_MIN_MS = Math.max(1000, Number(process.env.BOSS_GREET_DELAY_MIN_MS || 3000));
 const GREET_DELAY_MAX_MS = Math.max(GREET_DELAY_MIN_MS, Number(process.env.BOSS_GREET_DELAY_MAX_MS || 8000));
-const JOB_NAME = "AI应用实习生";
 
 let activeTask = null;
 let pauseRequested = false;
@@ -160,6 +162,31 @@ async function clickSelector(targetId, selector) {
   });
 }
 
+async function clickPagePoint(targetId, x, y, purpose = "point") {
+  const marker = `dashboard-${purpose}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await evalTarget(targetId, `JSON.stringify((() => {
+    document.querySelectorAll('[data-recruit-dashboard-point]').forEach(el => el.remove());
+    const el = document.createElement('i');
+    el.setAttribute('data-recruit-dashboard-point', ${JSON.stringify(marker)});
+    Object.assign(el.style, {
+      position: 'fixed',
+      left: '${Math.round(x - 3)}px',
+      top: '${Math.round(y - 3)}px',
+      width: '6px',
+      height: '6px',
+      pointerEvents: 'none',
+      zIndex: '2147483647'
+    });
+    document.documentElement.appendChild(el);
+    return { ok: true };
+  })())`);
+  try {
+    return await clickSelector(targetId, `[data-recruit-dashboard-point="${marker}"]`);
+  } finally {
+    await evalTarget(targetId, `document.querySelectorAll('[data-recruit-dashboard-point]').forEach(el => el.remove())`).catch(() => {});
+  }
+}
+
 async function findBossTarget() {
   const targets = await requestJson(`${PROXY}/targets`, { timeout: 2500 });
   const candidates = (targets || []).filter((item) =>
@@ -238,6 +265,132 @@ async function gotoRecommend(targetId) {
   }
   const resolved = await findBossTarget();
   return { ...result, targetId: resolved.targetId, url: resolved.url };
+}
+
+async function selectRecommendJob(targetId, options) {
+  const aliases = options.jobAliases || [options.jobName];
+  const probe = async (mode) => JSON.parse(await evalTarget(targetId, `JSON.stringify((() => {
+    const desiredAliases = ${JSON.stringify(aliases)};
+    const mode = ${JSON.stringify(mode)};
+    const frame = document.querySelector('iframe[name="recommendFrame"]');
+    const doc = frame?.contentDocument;
+    const frameRect = frame?.getBoundingClientRect();
+    if (!doc || !frameRect) return {
+      ok: false,
+      reason: 'recommend_frame_unavailable',
+      aliases: desiredAliases,
+      candidates: []
+    };
+    const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
+      .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const desired = desiredAliases.map(normalize).filter(Boolean);
+    const matchesDesired = text => {
+      const normalized = normalize(text);
+      return desired.some(value => value && normalized.includes(value));
+    };
+    const visible = el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden' &&
+        style?.opacity !== '0' && style?.pointerEvents !== 'none';
+    };
+    const describe = el => {
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      const text = (el.innerText || el.textContent || '').trim();
+      return {
+        text,
+        desiredMatch: matchesDesired(text),
+        x: frameRect.x + rect.x + rect.width / 2,
+        y: frameRect.y + rect.y + rect.height / 2,
+        source: 'recommendFrame',
+        signature: [
+          el.tagName, el.className?.baseVal || el.className || '',
+          el.getAttribute?.('role') || '', el.parentElement?.className?.baseVal ||
+          el.parentElement?.className || ''
+        ].join(' ').slice(0, 180)
+      };
+    };
+    const current = [...doc.querySelectorAll('.job-item.curr,[class*="job-item"][class*="curr"]')]
+      .find(visible);
+    const trigger = [
+      ...doc.querySelectorAll('.job-selecter-wrap,.job-selector-wrap,[class*="job-selecter"],[class*="job-selector"]')
+    ].filter(visible).sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return ar.width * ar.height - br.width * br.height;
+    })[0];
+    const options = [...doc.querySelectorAll('.job-item,[class*="job-item"],[role="option"]')]
+      .filter(visible)
+      .map(describe)
+      .filter(Boolean);
+    const target = mode === 'option'
+      ? options.find(item => item.desiredMatch)
+      : describe(trigger);
+    const currentDetail = describe(current) || describe(trigger);
+    return {
+      ok: !!target,
+      alreadySelected: mode === 'trigger' && !!currentDetail?.desiredMatch,
+      target,
+      current: currentDetail,
+      aliases: desiredAliases,
+      candidates: options.slice(0, 15)
+    };
+  })())`));
+
+  const current = await probe("trigger");
+  appendJsonl(runLogFile(), {
+    timestamp: now(),
+    run_id: activeTask.state.run_id,
+    event: "recommend_job_probe",
+    job_id: options.jobId,
+    detail: current,
+  });
+  if (!current.ok) throw new Error("paused_recommend_job_selector_not_found");
+  if (current.alreadySelected) {
+    updateState({
+      recommend_job: {
+        job_id: options.jobId,
+        selected_text: current.current?.text || current.target?.text || "",
+        already_selected: true,
+      },
+    }, "recommend_job_selected");
+    return current;
+  }
+
+  let option = await probe("option");
+  let dropdownWasOpen = option.ok;
+  if (!option.ok) {
+    await clickPagePoint(targetId, current.target.x, current.target.y, "recommend-job-trigger");
+    await wait(500);
+    option = await probe("option");
+    dropdownWasOpen = false;
+  }
+  appendJsonl(runLogFile(), {
+    timestamp: now(),
+    run_id: activeTask.state.run_id,
+    event: "recommend_job_option",
+    job_id: options.jobId,
+    dropdown_was_open: dropdownWasOpen,
+    detail: option,
+  });
+  if (!option.ok) throw new Error("paused_recommend_job_option_not_found");
+  await clickPagePoint(targetId, option.target.x, option.target.y, "recommend-job-option");
+  await wait(1200);
+
+  const verified = await probe("trigger");
+  if (!verified.ok || !verified.alreadySelected) {
+    throw new Error("paused_recommend_job_verification_failed");
+  }
+  updateState({
+    recommend_job: {
+      job_id: options.jobId,
+      selected_text: verified.current?.text || verified.target?.text || "",
+      already_selected: false,
+    },
+  }, "recommend_job_selected");
+  return verified;
 }
 
 function cardExtractionExpression(jobName) {
@@ -397,9 +550,16 @@ async function closePostGreetingPrompt(targetId, reason = "post_greet") {
   // of closing only the most recent one.
   for (let attempt = 0; attempt < 10 && quietRounds < 2; attempt += 1) {
     const raw = await evalTarget(targetId, `JSON.stringify((() => {
-      const docs = [document, ...[...document.querySelectorAll('iframe')].map(frame => {
-        try { return frame.contentDocument; } catch { return null; }
-      }).filter(Boolean)];
+      const contexts = [{ doc: document, frameRect: { x: 0, y: 0 }, source: 'main' }];
+      for (const frame of document.querySelectorAll('iframe')) {
+        try {
+          if (frame.contentDocument) contexts.push({
+            doc: frame.contentDocument,
+            frameRect: frame.getBoundingClientRect(),
+            source: frame.name || frame.className || 'iframe'
+          });
+        } catch {}
+      }
       const visible = el => {
         const rect = el.getBoundingClientRect?.();
         const style = el.ownerDocument.defaultView?.getComputedStyle(el);
@@ -407,17 +567,26 @@ async function closePostGreetingPrompt(targetId, reason = "post_greet") {
           style?.display !== 'none' && style?.visibility !== 'hidden' &&
           style?.opacity !== '0' && style?.pointerEvents !== 'none';
       };
-      const promptPattern = /已发送招呼|招呼已发送|已打招呼|为你推荐[\\s\\S]*相似的\\s*\\d*\\s*个?牛人/;
+      const promptPattern = /已发送招呼|招呼已发送|已打招呼|打招呼成功|为你推荐[\\s\\S]*相似|继续沟通|沟通成功/;
       const layerSelector = [
         '[role="dialog"]', '[class*="dialog"]', '[class*="modal"]',
-        '[class*="popup"]', '[class*="layer"]', '[class*="recommend"]'
+        '[class*="popup"]', '[class*="popover"]', '[class*="layer"]',
+        '[class*="mask"]', '[class*="drawer"]'
       ].join(',');
-      const preferred = ['不再显示', '知道了', '我知道了', '确定', '关闭'];
+      const preferred = ['不再显示', '知道了', '我知道了', '暂不', '取消', '关闭'];
 
-      for (const doc of docs) {
+      for (const contextInfo of contexts) {
+        const doc = contextInfo.doc;
         const layers = [...doc.querySelectorAll(layerSelector)]
           .filter(visible)
-          .filter(layer => promptPattern.test((layer.innerText || layer.textContent || '').trim()))
+          .filter(layer => {
+            const rect = layer.getBoundingClientRect();
+            const style = doc.defaultView?.getComputedStyle(layer);
+            const text = (layer.innerText || layer.textContent || '').trim();
+            const modalShape = rect.width >= 180 && rect.height >= 80 &&
+              (style?.position === 'fixed' || style?.position === 'absolute' || layer.getAttribute('role') === 'dialog');
+            return promptPattern.test(text) || modalShape;
+          })
           .sort((a, b) => {
             const az = Number(a.ownerDocument.defaultView?.getComputedStyle(a).zIndex) || 0;
             const bz = Number(b.ownerDocument.defaultView?.getComputedStyle(b).zIndex) || 0;
@@ -426,7 +595,7 @@ async function closePostGreetingPrompt(targetId, reason = "post_greet") {
         for (const layer of layers) {
           const context = (layer.innerText || layer.textContent || '').trim();
           const controls = [...layer.querySelectorAll(
-            'button,a,[role="button"],[aria-label],[title],[class*="close"],i,svg'
+            'button,a,[role="button"],[aria-label],[title],[class*="close"],[class*="Close"],i,svg'
           )].filter(visible);
           const textOf = el => (
             el.innerText || el.textContent || el.getAttribute?.('aria-label') ||
@@ -436,12 +605,15 @@ async function closePostGreetingPrompt(targetId, reason = "post_greet") {
           for (const label of preferred) {
             const control = controls.find(el => textOf(el) === label);
             if (control) {
-              control.click();
+              const rect = control.getBoundingClientRect();
               return {
-                closed: true,
+                found: true,
                 button_text: label,
                 reason: ${JSON.stringify(reason)},
-                prompt_text: context.slice(0, 200)
+                prompt_text: context.slice(0, 200),
+                x: contextInfo.frameRect.x + rect.x + rect.width / 2,
+                y: contextInfo.frameRect.y + rect.y + rect.height / 2,
+                source: contextInfo.source
               };
             }
           }
@@ -451,26 +623,32 @@ async function closePostGreetingPrompt(targetId, reason = "post_greet") {
               textOf(el), el.className?.baseVal || el.className || '',
               el.getAttribute?.('data-icon') || ''
             ].join(' ');
-            return /关闭|close|icon-close|dialog-close|modal-close/i.test(signature);
+            const rect = el.getBoundingClientRect();
+            return rect.width <= 80 && rect.height <= 80 &&
+              /关闭|close|icon-close|dialog-close|modal-close|boss-icon-close|iconfont.*close/i.test(signature);
           });
           if (closeControl) {
-            closeControl.click();
+            const rect = closeControl.getBoundingClientRect();
             return {
-              closed: true,
+              found: true,
               button_text: 'close_icon',
               reason: ${JSON.stringify(reason)},
-              prompt_text: context.slice(0, 200)
+              prompt_text: context.slice(0, 200),
+              x: contextInfo.frameRect.x + rect.x + rect.width / 2,
+              y: contextInfo.frameRect.y + rect.y + rect.height / 2,
+              source: contextInfo.source
             };
           }
         }
       }
-      return { closed: false, reason: ${JSON.stringify(reason)} };
+      return { found: false, reason: ${JSON.stringify(reason)} };
     })())`);
     const result = JSON.parse(raw);
-    if (result.closed) {
-      closed.push(result);
+    if (result.found) {
+      await clickPagePoint(targetId, result.x, result.y, "recommend-prompt-close");
+      closed.push({ ...result, closed: true });
       quietRounds = 0;
-      await wait(350);
+      await wait(500);
     } else {
       quietRounds += 1;
       await wait(250);
@@ -483,6 +661,58 @@ async function closePostGreetingPrompt(targetId, reason = "post_greet") {
     reason,
     prompts: closed,
   };
+}
+
+async function countRecommendationPrompts(targetId) {
+  return JSON.parse(await evalTarget(targetId, `JSON.stringify((() => {
+    const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap(frame => {
+      try { return frame.contentDocument ? [frame.contentDocument] : []; } catch { return []; }
+    })];
+    const visible = el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return rect && rect.width >= 180 && rect.height >= 80 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden' &&
+        style?.opacity !== '0' &&
+        (style?.position === 'fixed' || style?.position === 'absolute' || el.getAttribute('role') === 'dialog');
+    };
+    const selector = '[role="dialog"],[class*="dialog"],[class*="modal"],[class*="popup"],[class*="popover"],[class*="layer"],[class*="mask"],[class*="drawer"]';
+    const promptPattern = /已发送招呼|招呼已发送|已打招呼|打招呼成功|为你推荐[\\s\\S]*相似|继续沟通|沟通成功/;
+    const preferred = /^(不再显示|知道了|我知道了|暂不|取消|关闭)$/;
+    const actionable = layer => {
+      const text = (layer.innerText || layer.textContent || '').trim();
+      if (promptPattern.test(text)) return true;
+      return [...layer.querySelectorAll('button,a,[role="button"],[aria-label],[title],[class*="close"],[class*="Close"],i,svg')]
+        .filter(el => {
+          const rect = el.getBoundingClientRect?.();
+          const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+          return rect && rect.width > 0 && rect.height > 0 &&
+            style?.display !== 'none' && style?.visibility !== 'hidden';
+        })
+        .some(el => {
+          const label = (
+            el.innerText || el.textContent || el.getAttribute?.('aria-label') ||
+            el.getAttribute?.('title') || ''
+          ).trim();
+          const signature = [
+            label, el.className?.baseVal || el.className || '',
+            el.getAttribute?.('data-icon') || ''
+          ].join(' ');
+          const rect = el.getBoundingClientRect();
+          return preferred.test(label) ||
+            (rect.width <= 80 && rect.height <= 80 &&
+              /关闭|close|icon-close|dialog-close|modal-close|boss-icon-close|iconfont.*close/i.test(signature));
+        });
+    };
+    const layers = docs.flatMap(doc => [...doc.querySelectorAll(selector)].filter(visible).filter(actionable));
+    return {
+      count: layers.length,
+      samples: layers.slice(0, 8).map(el => ({
+        text: (el.innerText || el.textContent || '').trim().slice(0, 240),
+        className: String(el.className || '').slice(0, 180)
+      }))
+    };
+  })())`));
 }
 
 async function confirmGreeting(targetId, marker) {
@@ -520,10 +750,11 @@ async function confirmGreeting(targetId, marker) {
 }
 
 function candidateId(card) {
-  if (card.data_id) return `boss_recommend:${card.data_id}`;
+  const jobKey = activeTask?.state?.options?.jobId || "unknown_job";
+  if (card.data_id) return `boss_recommend:${card.data_id}:${jobKey}`;
   const hrefId = String(card.href || "").match(/(?:geek|uid|id)[=/]([^?&#/]+)/i)?.[1];
-  if (hrefId) return `boss_recommend:${hrefId}`;
-  return `recommend:${crypto.createHash("sha256").update(`${card.name}|${card.school}|${card.raw_text}`).digest("hex").slice(0, 20)}`;
+  if (hrefId) return `boss_recommend:${hrefId}:${jobKey}`;
+  return `recommend:${crypto.createHash("sha256").update(`${jobKey}|${card.name}|${card.school}|${card.raw_text}`).digest("hex").slice(0, 20)}`;
 }
 
 function oldContactedIds() {
@@ -617,7 +848,7 @@ async function runBatch(targetId, batch) {
     if (stalePrompt.closed) updateState({}, "post_greet_prompt_closed");
     const health = await inspectPage(targetId);
     checkSafety(health);
-    const data = await readCards(targetId, JOB_NAME);
+    const data = await readCards(targetId, options.jobName);
     checkSafety(data);
 
     const rawCard = (data.cards || []).find((card) => card.name && !attempted.has(candidateId(card)));
@@ -666,7 +897,8 @@ async function runBatch(targetId, batch) {
     };
     increment({ scanned: 1 });
 
-    if (activeTask.processed.has(id) || activeTask.processed.has(legacyId)) {
+    const useLegacyDedupe = options.jobId === "ai_app_intern";
+    if (activeTask.processed.has(id) || (useLegacyDedupe && activeTask.processed.has(legacyId))) {
       increment({ skipped: 1 });
       logDecision(candidate, "skipped", "", "今日或历史记录中已触达");
       continue;
@@ -679,6 +911,7 @@ async function runBatch(targetId, batch) {
       continue;
     }
 
+    let sentConfirmed = false;
     try {
       await clickCard(targetId, rawCard);
       let confirmation = await confirmGreeting(targetId, rawCard.marker);
@@ -696,17 +929,35 @@ async function runBatch(targetId, batch) {
         checkSafety(confirmation);
       }
       if (!confirmation.ok) throw new Error("greet_no_state_change");
-      const prompt = await closePostGreetingPrompt(targetId, "after_greet");
-      if (prompt.closed) updateState({}, "post_greet_prompt_closed");
       activeTask.processed.add(id);
-      activeTask.processed.add(legacyId);
+      if (useLegacyDedupe) activeTask.processed.add(legacyId);
       rememberDirectContact(candidate, legacyId);
       increment({ greeted: 1 });
       batchPassed += 1;
       logDecision(candidate, "greeted");
+      sentConfirmed = true;
+
+      const prompt = await closePostGreetingPrompt(targetId, "after_greet");
+      if (prompt.closed) updateState({}, "post_greet_prompt_closed");
+      const remainingPrompts = await countRecommendationPrompts(targetId);
+      appendJsonl(runLogFile(), {
+        timestamp: now(),
+        run_id: activeTask.state.run_id,
+        event: "post_greet_prompt_verify",
+        candidate_id: id,
+        closed_count: prompt.count,
+        remaining: remainingPrompts,
+      });
+      if (remainingPrompts.count > 0) {
+        throw new Error("paused_recommend_prompt_not_closed");
+      }
       consecutiveFailures = 0;
       await wait(GREET_DELAY_MIN_MS + Math.random() * (GREET_DELAY_MAX_MS - GREET_DELAY_MIN_MS));
     } catch (error) {
+      if (sentConfirmed) {
+        if (/^paused_/.test(String(error.message || error))) throw error;
+        throw new Error(`paused_post_greet_cleanup_failed:${String(error.message || error)}`);
+      }
       consecutiveFailures += 1;
       increment({ failed: 1 });
       logDecision(candidate, "failed", String(error.message || error));
@@ -727,6 +978,11 @@ async function execute(options) {
     const recommendTarget = await gotoRecommend(initialTarget.targetId);
     const targetId = recommendTarget.targetId || initialTarget.targetId;
     checkSafety(await inspectPage(targetId));
+    await selectRecommendJob(targetId, options);
+    const initialPrompt = await closePostGreetingPrompt(targetId, "before_first_greet");
+    const remainingInitialPrompts = await countRecommendationPrompts(targetId);
+    if (initialPrompt.closed) updateState({}, "post_greet_prompt_closed");
+    if (remainingInitialPrompts.count > 0) throw new Error("paused_recommend_prompt_not_closed");
 
     for (const batch of activeTask.state.batch_plan) {
       throwIfStopped();
@@ -810,6 +1066,15 @@ export async function startRun(input = {}) {
     throw error;
   }
   const options = normalizeRunOptions(input);
+  const jobsConfig = loadJobsConfig(ROOT);
+  const job = findJobByKey(jobsConfig, options.jobId);
+  if (!job?.enabled) {
+    const error = new Error("invalid_job_key");
+    error.statusCode = 422;
+    throw error;
+  }
+  options.jobName = job.display_name;
+  options.jobAliases = job.boss_job_names;
   const preflightResult = await preflight();
   if (!preflightResult.ok) {
     const error = new Error(preflightResult.errors.join(";"));

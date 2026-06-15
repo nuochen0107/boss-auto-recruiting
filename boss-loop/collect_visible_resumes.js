@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { findJobByKey, loadJobsConfig, matchJobFromText } = require("../config/job-router.cjs");
 const {
   parseArgs,
   loadConfigOptions,
@@ -28,9 +29,14 @@ const MODE = "collect-resumes";
 function loadOptions() {
   const args = parseArgs(process.argv.slice(2));
   const cfg = loadConfigOptions(args);
-  if (!cfg.jobName) throw new Error("job_name is required. Pass --job-name or configure in default-config.yaml.");
+  const jobsConfig = loadJobsConfig(path.resolve(__dirname, ".."), args["jobs-file"] || "");
+  const jobKey = args["job-key"] || "";
+  if (jobKey && !findJobByKey(jobsConfig, jobKey)?.enabled) throw new Error(`invalid_job_key:${jobKey}`);
   return {
     ...cfg,
+    jobsConfig,
+    jobsFile: jobsConfig.file,
+    jobKey,
     target: args.target || "",
     runId: args["run-id"] || `collect-${now().replace(/[:.]/g, "-")}`,
     selfCheck: !!args["self-check"],
@@ -79,7 +85,7 @@ function requestExpired(candidate, ttlDays, nowMs = Date.now()) {
   return nowMs - sentAt > Math.max(0, Number(ttlDays) || 0) * 86400000;
 }
 
-function getCollectTargets(candidates, maxCollect, jobName, ttlDays) {
+function getCollectTargets(candidates, options) {
   const values = Object.values(candidates);
   const completedKeys = new Set(
     values
@@ -89,9 +95,14 @@ function getCollectTargets(candidates, maxCollect, jobName, ttlDays) {
   );
   const pool = Object.values(candidates).filter(c => {
     if (!c || !c.candidate_id || !c.name) return false;
-    if (invalidCandidateName(c.name, jobName)) return false;
+    if (invalidCandidateName(c.name, c.job_name || options.jobName)) return false;
+    const route = c.job_key
+      ? { status: "matched", job: findJobByKey(options.jobsConfig, c.job_key) }
+      : matchJobFromText(options.jobsConfig, c.job_name || "");
+    if (route.status !== "matched" || !route.job?.enabled) return false;
+    if (options.jobKey && route.job.job_key !== options.jobKey) return false;
     if (!c.message_sent_at) return false;
-    if (requestExpired(c, ttlDays)) return false;
+    if (requestExpired(c, options.collectRequestTtlDays)) return false;
     if (hasCompletedResume(c)) return false;
     if (completedKeys.has(candidateNameJobKey(c))) return false;
     return COLLECT_STATUSES.has(c.status);
@@ -104,15 +115,24 @@ function getCollectTargets(candidates, maxCollect, jobName, ttlDays) {
     const tb = String(b.message_sent_at || b.resume_downloaded_at || b.ready_for_hire_sync_at || "");
     return tb.localeCompare(ta);
   });
-  return pool.slice(0, maxCollect).map(c => ({
-    id: c.candidate_id,
-    name: c.name,
-    school: c.school || "",
-    jobName: c.job_name || "",
-    status: c.status,
-    localResumePath: c.local_resume_path || null,
-    resumeHash: c.resume_hash || null,
-  }));
+  return pool.slice(0, options.maxCollectPerRun).map(c => {
+    const job = c.job_key
+      ? findJobByKey(options.jobsConfig, c.job_key)
+      : matchJobFromText(options.jobsConfig, c.job_name || "").job;
+    return {
+      id: c.candidate_id,
+      personId: c.person_id || "",
+      name: c.name,
+      school: c.school || "",
+      jobKey: job.job_key,
+      jobName: job.display_name,
+      bossJobNames: job.boss_job_names,
+      feishuJobId: job.feishu_hire_job_id || "",
+      status: c.status,
+      localResumePath: c.local_resume_path || null,
+      resumeHash: c.resume_hash || null,
+    };
+  });
 }
 
 function removeCandidateFromState(state, candidateId) {
@@ -261,6 +281,14 @@ function searchThreadByName(cdp, target, options) {
     const name = ${JSON.stringify(target.name)};
     const school = ${JSON.stringify(target.school || "")};
     const jobName = ${JSON.stringify(target.jobName || "")};
+    const jobNames = ${JSON.stringify(target.bossJobNames || [target.jobName].filter(Boolean))};
+    const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
+      .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const normalizedJobs = jobNames.map(normalize).filter(Boolean);
+    const matchesJob = text => {
+      const normalized = normalize(text);
+      return normalizedJobs.some(job => normalized.includes(job));
+    };
     const actionId = 'thread-result-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);
     document.querySelectorAll('[data-boss-auto-thread-result-id]').forEach(el => el.removeAttribute('data-boss-auto-thread-result-id'));
     const visible = el => {
@@ -282,8 +310,11 @@ function searchThreadByName(cdp, target, options) {
       .filter(v => v.rect.width >= 120 && v.rect.height >= 32)
       .filter(v => v.rect.height <= 180)
       .sort((a, b) => {
-        const as = school && a.text.includes(school) ? 0 : jobName && a.text.includes(jobName) ? 1 : 2;
-        const bs = school && b.text.includes(school) ? 0 : jobName && b.text.includes(jobName) ? 1 : 2;
+        const aj = matchesJob(a.text) ? 0 : 1;
+        const bj = matchesJob(b.text) ? 0 : 1;
+        if (aj !== bj) return aj - bj;
+        const as = school && a.text.includes(school) ? 0 : 1;
+        const bs = school && b.text.includes(school) ? 0 : 1;
         if (as !== bs) return as - bs;
         const aa = a.rect.width * a.rect.height;
         const ba = b.rect.width * b.rect.height;
@@ -293,18 +324,39 @@ function searchThreadByName(cdp, target, options) {
     if (contact) {
       contact.el.setAttribute('data-boss-auto-thread-result-id', actionId);
       const r = contact.el.getBoundingClientRect();
-      return { ok: true, source: 'search_contact_result', selector: '[data-boss-auto-thread-result-id="' + actionId + '"]', id: contact.el.id || '', text: contact.text.slice(0, 240), rect: { x: r.x, y: r.y, width: r.width, height: r.height } };
+      return {
+        ok: true,
+        source: 'search_contact_result',
+        selector: '[data-boss-auto-thread-result-id="' + actionId + '"]',
+        id: contact.el.id || '',
+        text: contact.text.slice(0, 240),
+        jobTextMatched: matchesJob(contact.text),
+        rect: { x: r.x, y: r.y, width: r.width, height: r.height }
+      };
     }
     const items = Array.from(document.querySelectorAll('.geek-item')).filter(visible);
     const matches = items.map((el, idx) => ({ el, idx, text: (el.innerText || el.textContent || '').trim() }))
       .filter(v => v.text.includes(name))
+      .filter(v => matchesJob(v.text))
       .sort((a, b) => {
-        const as = school && a.text.includes(school) ? 0 : jobName && a.text.includes(jobName) ? 1 : 2;
-        const bs = school && b.text.includes(school) ? 0 : jobName && b.text.includes(jobName) ? 1 : 2;
+        const as = school && a.text.includes(school) ? 0 : 1;
+        const bs = school && b.text.includes(school) ? 0 : 1;
         return as - bs;
       });
     const match = matches[0];
-    if (!match) return { ok: false, reason: 'search_result_not_found', visible: items.slice(0, 12).map(el => (el.innerText || el.textContent || '').trim().slice(0, 100)) };
+    if (!match) {
+      const sameName = Array.from(document.querySelectorAll('div, a, li, [role="button"], .geek-item'))
+        .filter(visible)
+        .map(el => textOf(el))
+        .filter(text => text.includes(name))
+        .slice(0, 12);
+      return {
+        ok: false,
+        reason: sameName.length ? 'search_result_job_mismatch' : 'search_result_not_found',
+        expectedJobs: jobNames,
+        sameName
+      };
+    }
     match.el.setAttribute('data-boss-auto-thread-result-id', actionId);
     const r = match.el.getBoundingClientRect();
     return { ok: true, source: 'chat_list_item', selector: '[data-boss-auto-thread-result-id="' + actionId + '"]', id: match.el.id || '', text: match.text.slice(0, 240), rect: { x: r.x, y: r.y, width: r.width, height: r.height } };
@@ -337,9 +389,17 @@ function probeAttachment(cdp, name) {
   })()`);
 }
 
-function threadIdentityStillMatches(cdp, name) {
+function threadIdentityStillMatches(cdp, target, requireJob = true) {
   return cdp.eval(`(() => {
-    const name = ${JSON.stringify(name)};
+    const name = ${JSON.stringify(target.name)};
+    const jobNames = ${JSON.stringify(target.bossJobNames || [target.jobName].filter(Boolean))};
+    const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
+      .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const normalizedJobs = jobNames.map(normalize).filter(Boolean);
+    const matchesJob = text => {
+      const normalized = normalize(text);
+      return normalizedJobs.some(job => normalized.includes(job));
+    };
     const visibleText = el => (el?.innerText || el?.textContent || '').trim();
     const visible = el => {
       const r = el.getBoundingClientRect?.();
@@ -363,7 +423,24 @@ function threadIdentityStillMatches(cdp, name) {
       })
       .map(visibleText)
       .find(t => t.includes(name));
-    return { ok: !!(header || convHasName), selected: !!selected, header: !!header, convHasName, hasConversation: !!conv };
+    const selectedText = selected || '';
+    const headerText = header || '';
+    const rightRoot = document.querySelector('.chat-container-private, [class*="conversation"]');
+    const rightText = visibleText(rightRoot).slice(0, 5000);
+    const jobMatched = matchesJob(selectedText) || matchesJob(headerText) || matchesJob(rightText);
+    const nameMatched = !!(header || convHasName);
+    return {
+      ok: nameMatched && (${JSON.stringify(requireJob)} ? jobMatched : true),
+      nameMatched,
+      jobMatched,
+      selected: !!selected,
+      header: !!header,
+      convHasName,
+      expectedJobs: jobNames,
+      selectedText: selectedText.slice(0, 300),
+      headerText: headerText.slice(0, 300),
+      hasConversation: !!conv
+    };
   })()`);
 }
 
@@ -375,7 +452,7 @@ function waitForCandidateThread(cdp, target, options) {
   for (let attempt = 1; attempt <= 5; attempt++) {
     sleepMs(450);
     const probe = probeAttachment(cdp, target.name);
-    const identity = probe.identity ? { ok: true, conversation: true } : threadIdentityStillMatches(cdp, target.name);
+    const identity = threadIdentityStillMatches(cdp, target);
     last = { attempt, probe, identity };
     appendLog(options.logFile, options.runId, MODE, {
       candidate_id: target.id,
@@ -632,8 +709,14 @@ function clickDownloadInPreview(cdp) {
       el.className,
       el.id,
     ].filter(Boolean).join(' ');
-    const previewText = (document.body.innerText || '').slice(0, 1200);
-    const inActivePreview = el => !!el.closest?.('.dialog-wrap.active, .boss-dialog__wrapper, .resume-common-dialog, .search-resume, [class*="preview"], [class*="Preview"], [class*="viewer"], [class*="Viewer"]');
+    const activePreviewSelectors = '.dialog-wrap.active, .boss-dialog__wrapper.resume-common-dialog, .resume-common-dialog.search-resume, .resume-common-wrap, .new-resume-online-main-ui, [class*="preview"], [class*="Preview"], [class*="viewer"], [class*="Viewer"]';
+    const previewRoots = Array.from(document.querySelectorAll(activePreviewSelectors)).filter(visible);
+    const previewText = previewRoots
+      .map(el => (el.innerText || el.textContent || '').trim())
+      .filter(Boolean)
+      .join('\\n')
+      .slice(0, 2400);
+    const inActivePreview = el => !!el.closest?.(activePreviewSelectors);
     const candidates = all
       .filter(visible)
       .filter(el => /下载|download|down-load/i.test(label(el)))
@@ -674,8 +757,9 @@ function clickDownloadInPreview(cdp) {
     if (!btn) {
       return {
         ok: false,
-        reason: /正在加载简历|请稍等/.test(previewText) ? 'download_button_not_ready' : 'no_download_button',
+        reason: /正在加载简历|请稍等|加载中/.test(previewText) ? 'download_button_not_ready' : 'no_download_button',
         previewText,
+        previewRootCount: previewRoots.length,
         candidates: all.filter(visible).slice(0, 30).map(el => label(el).slice(0, 80))
       };
     }
@@ -700,21 +784,26 @@ function closePreview(cdp) {
 }
 
 function setDownloadDir(proxy, target, dir) {
+  const attempts = [];
   try {
     const info = requestJson("GET", `${proxy}/info?target=${target}`);
     const browserContextId = info.browserContextId;
-    if (!browserContextId) return { ok: false, reason: "no_browser_context_id" };
-    const body = JSON.stringify({ method: "Browser.setDownloadBehavior", params: { behavior: "allow", downloadPath: dir, browserContextId } });
-    requestJson("POST", `${proxy}/cdp?target=${target}`, body);
-    return { ok: true, method: "Browser.setDownloadBehavior" };
-  } catch (e) {
-    try {
-      const body2 = JSON.stringify({ method: "Page.setDownloadBehavior", params: { behavior: "allow", downloadPath: dir } });
-      requestJson("POST", `${proxy}/cdp?target=${target}`, body2);
-      return { ok: true, method: "Page.setDownloadBehavior" };
-    } catch (e2) {
-      return { ok: false, reason: "cdp_set_download_behavior_failed" };
+    if (browserContextId) {
+      const body = JSON.stringify({ method: "Browser.setDownloadBehavior", params: { behavior: "allow", downloadPath: dir, browserContextId } });
+      requestJson("POST", `${proxy}/cdp?target=${target}`, body);
+      return { ok: true, method: "Browser.setDownloadBehavior", browserContextId };
     }
+    attempts.push({ method: "Browser.setDownloadBehavior", reason: "no_browser_context_id" });
+  } catch (e) {
+    attempts.push({ method: "Browser.setDownloadBehavior", reason: String(e.message || e).slice(0, 200) });
+  }
+  try {
+    const body = JSON.stringify({ method: "Page.setDownloadBehavior", params: { behavior: "allow", downloadPath: dir } });
+    requestJson("POST", `${proxy}/cdp?target=${target}`, body);
+    return { ok: true, method: "Page.setDownloadBehavior", attempts };
+  } catch (e) {
+    attempts.push({ method: "Page.setDownloadBehavior", reason: String(e.message || e).slice(0, 200) });
+    return { ok: false, reason: "cdp_set_download_behavior_failed", attempts };
   }
 }
 
@@ -729,33 +818,37 @@ function dirSnapshot(dir) {
   return map;
 }
 
-function findNewDownload(dir, beforeSnapshot, afterTime, pollIntervalMs, maxWaitSeconds) {
+function findNewDownloadInDirs(directories, beforeSnapshots, afterTime, pollIntervalMs, maxWaitSeconds) {
+  const uniqueDirs = [...new Set(directories.map((dir) => path.resolve(dir)))];
   const deadline = Date.now() + maxWaitSeconds * 1000;
-  let lastCandidates = new Map();
+  const lastCandidates = new Map();
   while (Date.now() < deadline) {
     const candidates = [];
-    if (fs.existsSync(dir)) {
-      for (const f of fs.readdirSync(dir)) {
-        if (/\.(crdownload|tmp|part)$/i.test(f)) continue;
-        const fp = path.join(dir, f);
-        const st = fs.statSync(fp);
-        if (st.mtimeMs < afterTime - 2000) continue;
-        if (beforeSnapshot.has(fp) && beforeSnapshot.get(fp).mtime === st.mtimeMs && beforeSnapshot.get(fp).size === st.size) continue;
-        candidates.push({ path: fp, size: st.size, mtime: st.mtimeMs });
+    for (const dir of uniqueDirs) {
+      if (!fs.existsSync(dir)) continue;
+      const beforeSnapshot = beforeSnapshots.get(dir) || new Map();
+      for (const filename of fs.readdirSync(dir)) {
+        if (/\.(crdownload|tmp|part)$/i.test(filename)) continue;
+        const filePath = path.join(dir, filename);
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile() || stat.mtimeMs < afterTime - 2000) continue;
+        const before = beforeSnapshot.get(filePath);
+        if (before && before.mtime === stat.mtimeMs && before.size === stat.size) continue;
+        candidates.push({ filePath, size: stat.size, mtime: stat.mtimeMs, dir });
       }
     }
-    const stable = candidates.filter(c => {
-      const prev = lastCandidates.get(c.path);
-      return prev && prev.size === c.size && prev.mtime === c.mtime;
+    const stable = candidates.filter((candidate) => {
+      const previous = lastCandidates.get(candidate.filePath);
+      return previous && previous.size === candidate.size && previous.mtime === candidate.mtime;
     });
-    if (stable.length > 0) {
+    if (stable.length) {
       stable.sort((a, b) => b.mtime - a.mtime);
-      return { ok: true, filePath: stable[0].path, size: stable[0].size };
+      return { ok: true, ...stable[0], monitoredDirs: uniqueDirs };
     }
-    for (const c of candidates) lastCandidates.set(c.path, c);
+    for (const candidate of candidates) lastCandidates.set(candidate.filePath, candidate);
     sleepMs(pollIntervalMs);
   }
-  return { ok: false, reason: "download_timeout" };
+  return { ok: false, reason: "download_timeout", monitoredDirs: uniqueDirs };
 }
 
 function makeResumeFilename(jobName, name, school, ext, originalFilename) {
@@ -785,14 +878,15 @@ function resolveUniquePath(dir, filename) {
   return path.join(dir, `${base}_${hash}${ext}`);
 }
 
-function findExistingResumeByHash(candidates, candidateId, hash) {
+function findExistingResumeByHash(candidates, target, hash) {
   if (!hash) return null;
-  const sameCandidate = candidates[candidateId];
+  const sameCandidate = candidates[target.id];
   if (sameCandidate?.resume_hash === hash && sameCandidate.local_resume_path && fs.existsSync(sameCandidate.local_resume_path)) {
-    return { candidate_id: candidateId, local_resume_path: sameCandidate.local_resume_path, scope: "same_candidate" };
+    return { candidate_id: target.id, local_resume_path: sameCandidate.local_resume_path, scope: "same_candidate" };
   }
   for (const c of Object.values(candidates)) {
-    if (!c || c.candidate_id === candidateId) continue;
+    if (!c || c.candidate_id === target.id) continue;
+    if (target.personId && c.person_id === target.personId) continue;
     if (c.resume_hash === hash && c.local_resume_path && fs.existsSync(c.local_resume_path)) {
       return { candidate_id: c.candidate_id, local_resume_path: c.local_resume_path, scope: "other_candidate_same_hash" };
     }
@@ -883,9 +977,7 @@ function _main(options) {
   const activeCandidates = getCandidates(state);
   const targets = getCollectTargets(
     activeCandidates,
-    options.maxCollectPerRun,
-    options.jobName,
-    options.collectRequestTtlDays,
+    options,
   );
 
   if (options.selfCheck) {
@@ -893,6 +985,7 @@ function _main(options) {
       status: "ok",
       script: "collect_visible_resumes",
       job_name: options.jobName,
+      job_key: options.jobKey || "all",
       collect_targets: targets.length,
       expired_targets: expired.length,
       dry_run_supported: true,
@@ -920,12 +1013,31 @@ function _main(options) {
   }
 
   ensureDir(options.resumeDownloadDir);
-  let downloadDirSet = false;
+  let downloadDirResult = { ok: true, skipped: true };
   if (!options.dryRun) {
-    const dirResult = setDownloadDir(options.proxy, cdp.target, options.resumeDownloadDir);
-    downloadDirSet = dirResult.ok;
-    if (!dirResult.ok) {
-      appendLog(options.logFile, options.runId, MODE, { action: "set_download_dir", result: "failed", error: dirResult.reason });
+    downloadDirResult = setDownloadDir(options.proxy, cdp.target, options.resumeDownloadDir);
+    appendLog(options.logFile, options.runId, MODE, {
+      action: "set_download_dir",
+      result: downloadDirResult.ok ? "ok" : "failed",
+      detail: downloadDirResult,
+    });
+    if (!downloadDirResult.ok) {
+      console.log(JSON.stringify({
+        status: "paused",
+        mode: MODE,
+        scanned: 0,
+        received: 0,
+        downloaded: 0,
+        queued: 0,
+        completed: 0,
+        skipped: 0,
+        failed: 1,
+        download_dir: downloadDirResult,
+        paused_reason: "paused_download_directory_unavailable",
+        run_id: options.runId,
+        target: cdp.target,
+      }));
+      return;
     }
   }
 
@@ -942,6 +1054,7 @@ function _main(options) {
   let lastDuplicateOtherHash = "";
   let consecutiveDuplicateOtherHash = 0;
   let consecutiveDownloadFailures = 0;
+  let lastSearchDetail = null;
 
   for (const target of targets) {
     if (pausedReason) break;
@@ -972,10 +1085,30 @@ function _main(options) {
     const found = searchThreadByName(cdp, target, options);
     const item = found.item;
     if (!item) {
-      appendLog(options.logFile, options.runId, MODE, { candidate_id: target.id, action: "open_thread", result: "skipped", error_code: "candidate_not_found_by_search", detail: found.result || found.search || null });
+      lastSearchDetail = {
+        candidate_id: target.id,
+        candidate_name: target.name,
+        job_key: target.jobKey,
+        result: found.result || found.search || null,
+      };
+      appendLog(options.logFile, options.runId, MODE, {
+        candidate_id: target.id,
+        action: "open_thread",
+        result: "skipped",
+        error_code: found.result?.reason || "candidate_not_found_by_search",
+        expected_job_key: target.jobKey,
+        expected_job_name: target.jobName,
+        detail: found.result || found.search || null,
+      });
       skipped++;
       continue;
     }
+    lastSearchDetail = {
+      candidate_id: target.id,
+      candidate_name: target.name,
+      job_key: target.jobKey,
+      item,
+    };
 
     if (!options.dryRun) {
       cdp.eval(`(() => {
@@ -1007,7 +1140,7 @@ function _main(options) {
 
     if (hasUsableLocalResume(c) && ["resume_downloaded", "ready_for_hire_sync", "sync_queue_failed", "paused_send_failed"].includes(c.status)) {
       if (c.status === "resume_downloaded" || c.status === "sync_queue_failed" || !syncQueueRecordExists(options, target.id, c.resume_hash, c.local_resume_path)) {
-        const queueResult = writeSyncQueue(options, target.id, c.name, c.school, c.local_resume_path, c.resume_hash);
+        const queueResult = writeSyncQueue(options, target, c.local_resume_path, c.resume_hash);
         if (queueResult.ok) {
           candidates[target.id] = {
             ...c,
@@ -1094,7 +1227,7 @@ function _main(options) {
     }
 
     const afterAcceptProbe = probeAttachment(cdp, target.name);
-    const afterAcceptIdentity = afterAcceptProbe.identity ? { ok: true, conversation: true } : threadIdentityStillMatches(cdp, target.name);
+    const afterAcceptIdentity = threadIdentityStillMatches(cdp, target, false);
     if (!afterAcceptIdentity.ok) {
       appendLog(options.logFile, options.runId, MODE, { candidate_id: target.id, action: "identity_check_after_accept", result: "failed", detail: afterAcceptIdentity });
       skipped++;
@@ -1116,17 +1249,40 @@ function _main(options) {
     }
 
     let dlBtn = null;
-    for (let attempt = 0; attempt < 8; attempt++) {
+    const downloadButtonAttempts = [];
+    for (let attempt = 0; attempt < 30; attempt++) {
       dlBtn = clickDownloadInPreview(cdp);
-      if (dlBtn.ok || dlBtn.reason !== "download_button_not_ready") break;
-      sleepMs(250);
+      downloadButtonAttempts.push({
+        attempt: attempt + 1,
+        ok: !!dlBtn.ok,
+        reason: dlBtn.reason || "",
+        previewText: String(dlBtn.previewText || "").slice(0, 160),
+      });
+      if (dlBtn.ok) break;
+      if (dlBtn.reason === "download_button_not_ready") {
+        sleepMs(500);
+        continue;
+      }
+      // The preview layer can be mounted before its toolbar. Give it a short
+      // grace period even when the loading label is not exposed in the DOM.
+      if (dlBtn.previewRootCount > 0 && attempt < 9) {
+        sleepMs(500);
+        continue;
+      }
+      break;
     }
     if (!dlBtn.ok) {
       closePreview(cdp);
       candidates[target.id] = { ...c, status: "download_failed", last_observation: "download_button_not_found", last_error: "download_button_not_found" };
       failed++;
       consecutiveDownloadFailures++;
-      appendLog(options.logFile, options.runId, MODE, { candidate_id: target.id, action: "download", result: "failed", error_code: "download_button_not_found", detail: dlBtn });
+      appendLog(options.logFile, options.runId, MODE, {
+        candidate_id: target.id,
+        action: "download",
+        result: "failed",
+        error_code: "download_button_not_found",
+        detail: { ...dlBtn, attempts: downloadButtonAttempts },
+      });
       saveState(options.stateFile, state, options.jobName);
       if (consecutiveDownloadFailures >= 2) {
         pausedReason = "paused_consecutive_download_failures";
@@ -1135,20 +1291,36 @@ function _main(options) {
       continue;
     }
 
-    const beforeSnapshot = dirSnapshot(downloadDirSet ? options.resumeDownloadDir : require("os").homedir() + "/Downloads");
+    const browserDownloadsDir = path.join(require("os").homedir(), "Downloads");
+    const monitoredDownloadDirs = [options.resumeDownloadDir, browserDownloadsDir];
+    const beforeSnapshots = new Map(
+      [...new Set(monitoredDownloadDirs.map((dir) => path.resolve(dir)))]
+        .map((dir) => [dir, dirSnapshot(dir)]),
+    );
     const clickTime = Date.now();
     cdp.clickAt(dlBtn.selector);
     appendLog(options.logFile, options.runId, MODE, { candidate_id: target.id, action: "click_download", result: "clicked", detail: dlBtn });
 
-    const downloadDir = downloadDirSet ? options.resumeDownloadDir : (require("os").homedir() + "/Downloads");
-    const dlResult = findNewDownload(downloadDir, beforeSnapshot, clickTime, options.downloadPollIntervalMs, options.downloadMaxWaitSeconds);
+    const dlResult = findNewDownloadInDirs(
+      monitoredDownloadDirs,
+      beforeSnapshots,
+      clickTime,
+      options.downloadPollIntervalMs,
+      options.downloadMaxWaitSeconds,
+    );
 
     if (!dlResult.ok) {
       closePreview(cdp);
       candidates[target.id] = { ...c, status: "download_failed", last_observation: dlResult.reason, last_error: dlResult.reason };
       failed++;
       consecutiveDownloadFailures++;
-      appendLog(options.logFile, options.runId, MODE, { candidate_id: target.id, action: "download", result: "failed", error_code: dlResult.reason });
+      appendLog(options.logFile, options.runId, MODE, {
+        candidate_id: target.id,
+        action: "download",
+        result: "failed",
+        error_code: dlResult.reason,
+        detail: dlResult,
+      });
       saveState(options.stateFile, state, options.jobName);
       if (consecutiveDownloadFailures >= 2) {
         pausedReason = "paused_consecutive_download_failures";
@@ -1159,7 +1331,7 @@ function _main(options) {
 
     const ext = path.extname(dlResult.filePath).toLowerCase() || ".pdf";
     const downloadedHash = fileHash(dlResult.filePath);
-    const existingResume = findExistingResumeByHash(candidates, target.id, downloadedHash);
+    const existingResume = findExistingResumeByHash(candidates, target, downloadedHash);
     if (existingResume) {
       closePreview(cdp);
       if (path.resolve(dlResult.filePath) !== path.resolve(existingResume.local_resume_path)) {
@@ -1205,13 +1377,16 @@ function _main(options) {
     consecutiveDuplicateOtherHash = 0;
 
     const originalFilename = path.basename(dlResult.filePath);
-    const finalName = makeResumeFilename(options.jobName, target.name, target.school, ext.replace(/^\./, ""), originalFilename);
-    const destPath = resolveUniquePath(options.resumeDownloadDir, finalName);
+    const finalName = makeResumeFilename(target.jobName, target.name, target.school, ext.replace(/^\./, ""), originalFilename);
+    const jobResumeDir = path.join(options.resumeDownloadDir, safeFilename(target.jobKey || "_unrouted"));
+    ensureDir(jobResumeDir);
+    const destPath = resolveUniquePath(jobResumeDir, finalName);
 
     try {
-      if (downloadDirSet) {
+      try {
         fs.renameSync(dlResult.filePath, destPath);
-      } else {
+      } catch (error) {
+        if (error?.code !== "EXDEV") throw error;
         fs.copyFileSync(dlResult.filePath, destPath);
         fs.unlinkSync(dlResult.filePath);
       }
@@ -1237,8 +1412,19 @@ function _main(options) {
     }
     downloaded++;
     consecutiveDownloadFailures = 0;
+    appendLog(options.logFile, options.runId, MODE, {
+      candidate_id: target.id,
+      action: "download_detected",
+      result: "ok",
+      source_dir: dlResult.dir,
+      monitored_dirs: dlResult.monitoredDirs,
+      path: destPath,
+    });
     candidates[target.id] = {
       ...c,
+      job_key: target.jobKey,
+      job_name: target.jobName,
+      job_id: target.feishuJobId,
       status: "resume_downloaded",
       local_resume_path: destPath,
       resume_hash: hash,
@@ -1251,7 +1437,7 @@ function _main(options) {
     saveState(options.stateFile, state, options.jobName);
     batch = [];
 
-    const queueResult = writeSyncQueue(options, target.id, c.name, c.school, destPath, hash);
+    const queueResult = writeSyncQueue(options, target, destPath, hash);
     if (!queueResult.ok) {
       candidates[target.id] = { ...candidates[target.id], status: "sync_queue_failed", last_observation: "sync_queue_write_failed", last_error: queueResult.reason || "sync_queue_write_failed" };
       failed++;
@@ -1292,6 +1478,11 @@ function _main(options) {
     }
   }
 
+  if (!pausedReason && targets.length > 0 && scanned === 0 && skipped > 0) {
+    pausedReason = "paused_collect_targets_unavailable";
+    failed++;
+  }
+
   saveState(options.stateFile, state, options.jobName);
   console.log(JSON.stringify({
     status: pausedReason ? "paused" : "ok",
@@ -1303,22 +1494,27 @@ function _main(options) {
     completed,
     skipped,
     failed,
+    download_dir: downloadDirResult,
+    search_thread: lastSearchDetail,
     paused_reason: pausedReason,
     run_id: options.runId,
     target: cdp.target,
   }));
 }
 
-function writeSyncQueue(options, candidateId, name, school, localPath, hash) {
+function writeSyncQueue(options, target, localPath, hash) {
   try {
-    if (syncQueueRecordExists(options, candidateId, hash, localPath)) {
+    if (syncQueueRecordExists(options, target.id, hash, localPath)) {
       return { ok: true, alreadyExists: true };
     }
     const record = {
-      candidate_id: candidateId,
-      name: name || "",
-      school: school || "",
-      job_name: options.jobName,
+      candidate_id: target.id,
+      application_id: target.id,
+      name: target.name || "",
+      school: target.school || "",
+      job_key: target.jobKey,
+      job_name: target.jobName,
+      job_id: target.feishuJobId,
       filename: path.basename(localPath),
       local_resume_path: localPath,
       resume_hash: hash,

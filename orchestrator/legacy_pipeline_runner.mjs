@@ -2,17 +2,19 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, "..");
+const require = createRequire(import.meta.url);
+const { enabledJobs, findJobByKey, loadJobsConfig } = require("../config/job-router.cjs");
 const DATA_ROOT = path.resolve(process.env.BOSS_DATA_ROOT || path.join(ROOT, "data"));
 const RUN_DIR = path.join(DATA_ROOT, "runs");
 const CURRENT_FILE = path.join(RUN_DIR, "current-pipeline.json");
 const PIPELINE_LOCK_DIR = path.join(RUN_DIR, "legacy-pipeline.lock");
 const RECOMMEND_LOCK_DIR = path.join(RUN_DIR, "recommend-greet.lock");
 const LEGACY_BOSS_LOCK_DIR = path.join(DATA_ROOT, "briefs/boss-auto.lockdir");
-const JOB_NAME = "AI应用实习生";
 const MAX_OUTPUT_LINES = 120;
 
 const SCRIPTS = {
@@ -96,59 +98,98 @@ function cleanupChildBossLock(childPid) {
 }
 
 function normalizeOptions(input = {}) {
-  const type = ["chat", "collect", "sync", "full"].includes(input.type) ? input.type : "chat";
+  const jobsConfig = loadJobsConfig(ROOT);
+  const jobs = enabledJobs(jobsConfig);
+  const type = ["chat", "collect", "front", "sync", "full"].includes(input.type) ? input.type : "chat";
   const mode = input.mode === "real-run" ? "real-run" : "dry-run";
   const dailyTarget = Math.max(1, Math.min(200, Number(input.dailyTarget) || 20));
   const chatLimit = Math.max(1, Math.min(200, Number(input.chatLimit) || 20));
   const collectLimit = Math.max(1, Math.min(200, Number(input.collectLimit) || 50));
-  const feishuJobId = String(input.feishuJobId || "").trim();
-  const syncLimit = Math.max(1, Math.min(50, Number(input.syncLimit) || 1));
-  if (["sync", "full"].includes(type) && !/^\d+$/.test(feishuJobId)) {
-    const error = new Error("invalid_feishu_job_id");
+  const jobKey = String(input.jobKey || "all").trim() || "all";
+  if (jobKey !== "all" && !findJobByKey(jobsConfig, jobKey)?.enabled) {
+    const error = new Error("invalid_job_key");
     error.statusCode = 422;
     throw error;
   }
-  return { type, mode, dailyTarget, chatLimit, collectLimit, jobName: JOB_NAME, feishuJobId, syncLimit };
+  const selectedJobs = jobKey === "all" ? jobs : [findJobByKey(jobsConfig, jobKey)];
+  const syncLimit = Math.max(1, Math.min(50, Number(input.syncLimit) || 1));
+  const deleteUploadedResumes = input.deleteUploadedResumes === true;
+  const missingRoutes = selectedJobs.filter((job) => !/^\d+$/.test(job.feishu_hire_job_id));
+  if (["sync", "full"].includes(type) && missingRoutes.length) {
+    const error = new Error(`missing_feishu_job_routes:${missingRoutes.map((job) => job.job_key).join(",")}`);
+    error.statusCode = 422;
+    throw error;
+  }
+  return {
+    type,
+    mode,
+    dailyTarget,
+    chatLimit,
+    collectLimit,
+    jobKey,
+    selectedJobs: selectedJobs.map((job) => ({
+      job_key: job.job_key,
+      display_name: job.display_name,
+      feishu_hire_job_id: job.feishu_hire_job_id,
+    })),
+    jobsFile: jobsConfig.file,
+    syncLimit,
+    deleteUploadedResumes,
+  };
 }
 
 function stagesFor(options) {
   const dry = options.mode === "dry-run";
-  const bossArgs = [
-    "--job-name", options.jobName,
-    "--max-greet-per-run", String(options.chatLimit),
-  ];
   const collectArgs = [
-    "--job-name", options.jobName,
     "--max-collect-per-run", String(options.collectLimit),
   ];
+  if (options.jobKey !== "all") {
+    collectArgs.push("--job-key", options.jobKey);
+  }
   if (dry) {
-    bossArgs.push("--dry-run");
     collectArgs.push("--dry-run");
   }
+  const chatStages = options.selectedJobs.map((job) => ({
+    key: `chat:${job.job_key}`,
+    label: `处理沟通页：${job.display_name}`,
+    script: SCRIPTS.boss,
+    args: [
+      "--job-key", job.job_key,
+      "--max-greet-per-run", String(options.chatLimit),
+      "--skip-recommend",
+      ...(dry ? ["--dry-run"] : []),
+    ],
+  }));
+  const collectStage = {
+    key: options.jobKey === "all" ? "collect:all" : `collect:${options.jobKey}`,
+    label: options.jobKey === "all" ? "全局搜索并收取简历" : `全局搜索并收取简历：${options.selectedJobs[0].display_name}`,
+    script: SCRIPTS.collect,
+    args: collectArgs,
+  };
   const syncArgs = [dry ? "--dry-run" : "--apply", "--limit", String(options.syncLimit)];
   const syncEnv = {
     FEISHU_HIRE_UPLOAD_MODE: "talent_application",
-    FEISHU_HIRE_JOB_ID: options.feishuJobId,
-    FEISHU_HIRE_UPLOAD_STATE: path.join(RUN_DIR, `feishu-hire-job-${options.feishuJobId}-state.json`),
+    BOSS_JOBS_FILE: options.jobsFile,
+    BOSS_SYNC_JOB_KEY: options.jobKey === "all" ? "" : options.jobKey,
+    FEISHU_HIRE_UPLOAD_STATE: path.join(RUN_DIR, "feishu-hire-multi-job-state.json"),
+    FEISHU_HIRE_DELETE_AFTER_SUCCESS: options.deleteUploadedResumes ? "1" : "0",
   };
 
   if (options.type === "chat") {
-    return [{ key: "chat", label: "沟通页求简历", script: SCRIPTS.boss, args: [...bossArgs, "--skip-recommend"] }];
+    return chatStages;
   }
   if (options.type === "collect") {
-    return [{ key: "collect", label: "收取简历附件", script: SCRIPTS.collect, args: collectArgs }];
+    return [collectStage];
   }
   if (options.type === "sync") {
     return [{ key: "sync", label: "同步飞书招聘岗位", script: SCRIPTS.sync, args: syncArgs, env: syncEnv }];
   }
+  if (options.type === "front") {
+    return [...chatStages, collectStage];
+  }
   return [
-    {
-      key: "chat",
-      label: "处理沟通页并索要简历",
-      script: SCRIPTS.boss,
-      args: [...bossArgs, "--skip-recommend"],
-    },
-    { key: "collect", label: "收取简历附件", script: SCRIPTS.collect, args: collectArgs },
+    ...chatStages,
+    collectStage,
     { key: "sync", label: "同步飞书招聘岗位", script: SCRIPTS.sync, args: syncArgs, env: syncEnv },
   ];
 }
@@ -277,8 +318,10 @@ export function startLegacyRun(input = {}) {
       ...stage,
       env: stage.env ? {
         FEISHU_HIRE_UPLOAD_MODE: stage.env.FEISHU_HIRE_UPLOAD_MODE,
-        FEISHU_HIRE_JOB_ID: stage.env.FEISHU_HIRE_JOB_ID,
+        BOSS_JOBS_FILE: stage.env.BOSS_JOBS_FILE,
+        BOSS_SYNC_JOB_KEY: stage.env.BOSS_SYNC_JOB_KEY,
         FEISHU_HIRE_UPLOAD_STATE: stage.env.FEISHU_HIRE_UPLOAD_STATE,
+        FEISHU_HIRE_DELETE_AFTER_SUCCESS: stage.env.FEISHU_HIRE_DELETE_AFTER_SUCCESS,
       } : undefined,
       status: "pending",
       started_at: "",

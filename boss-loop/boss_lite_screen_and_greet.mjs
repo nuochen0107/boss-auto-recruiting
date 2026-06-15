@@ -2,9 +2,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const require = createRequire(import.meta.url);
+const { enabledJobs, findJobByKey, loadJobsConfig, matchJobFromText, normalizeJobText } = require('../config/job-router.cjs');
 const DATA_ROOT = path.resolve(process.env.BOSS_DATA_ROOT || path.resolve(__dirname, '../data'));
 const DEFAULT_CONFIG = path.resolve(process.env.BOSS_CONFIG_FILE || path.resolve(__dirname, '../assets/default-config.yaml'));
 
@@ -46,10 +50,19 @@ function readYamlNumber(file, key, fallback) {
 function loadConfig() {
   const args = parseArgs(process.argv.slice(2));
   const configFile = args.config || DEFAULT_CONFIG;
+  const jobsConfig = loadJobsConfig(PROJECT_ROOT, args['jobs-file'] || '');
+  const selectedJobKey = args['job-key'] || '';
+  const selectedJob = selectedJobKey ? findJobByKey(jobsConfig, selectedJobKey) : null;
+  if (selectedJobKey && !selectedJob?.enabled) throw new Error(`invalid_job_key:${selectedJobKey}`);
+  const fallbackJob = selectedJob || enabledJobs(jobsConfig)[0] || null;
 
   const cfg = {
-    job_name: args['job-name'] || readYamlScalar(configFile, 'job_name') || '',
+    job_name: args['job-name'] || readYamlScalar(configFile, 'job_name') || fallbackJob?.display_name || '',
     job_id: args['job-id'] || readYamlScalar(configFile, 'job_id') || '',
+    job_key: selectedJobKey,
+    selected_job: selectedJob,
+    jobs_file: jobsConfig.file,
+    jobs_config: jobsConfig,
     mode: 'screen-and-greet',
     proxy: (args.proxy || readYamlScalar(configFile, 'proxy_url') || 'http://127.0.0.1:3456').replace(/\/$/, ''),
     state_file: args['state-file'] || readYamlScalar(configFile, 'state_file') || path.join(DATA_ROOT, 'briefs/boss-auto-lightweight-loop-state.json'),
@@ -94,7 +107,7 @@ function loadConfig() {
     runId: args['run-id'] || `sg-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
   };
 
-  if (!cfg.job_name) throw new Error('job_name is required. Pass --job-name or configure in default-config.yaml.');
+  if (!enabledJobs(jobsConfig).length) throw new Error('no_enabled_jobs');
   return cfg;
 }
 
@@ -113,6 +126,8 @@ const sendingBossIds = new Set();
 let dirty = new Map();
 let haveLock = false;
 let pausedReason = null;
+let lastJobFilterDetail = null;
+let lastOpenChatDetail = null;
 
 const sentStates = new Set([
   'first_contact_sent', 'attachment_requested', 'attachment_sent_by_candidate',
@@ -123,6 +138,7 @@ const counters = {
   scanned: 0, eligible: 0, greeted: 0, sent: 0, received: 0,
   downloaded: 0, queued: 0, skipped: 0, failed: 0
 };
+const jobRouteCounters = { matched: {}, unknown: 0, ambiguous: 0, filtered: 0 };
 
 const nowIso = () => new Date().toISOString();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -231,6 +247,28 @@ function bossCandidateId(bossId) {
   return `boss_chat:${normalizeBossId(bossId)}`;
 }
 
+function bossApplicationId(bossId, jobKey) {
+  const base = bossCandidateId(bossId);
+  return jobKey ? `${base}:${jobKey}` : base;
+}
+
+function contactKey(bossId, jobKey) {
+  return `${normalizeBossId(bossId)}:${jobKey || "legacy"}`;
+}
+
+function jobFields(route, rawText = '') {
+  const job = route?.job;
+  return {
+    job_key: job?.job_key || '',
+    job_name: job?.display_name || '',
+    boss_job_name_raw: route?.matched_alias || '',
+    job_match_status: route?.status || 'unknown',
+    job_match_source: 'chat_card',
+    job_id: job?.feishu_hire_job_id || '',
+    chat_card_text: String(rawText || '').slice(0, 600),
+  };
+}
+
 function loadContactedBossIds() {
   contactedBossIds = new Set();
   if (!fs.existsSync(CFG.contacted_boss_ids_file)) return;
@@ -240,10 +278,12 @@ function loadContactedBossIds() {
     try {
       const record = JSON.parse(line);
       const bossId = normalizeBossId(typeof record === 'string' ? record : record?.boss_id);
-      if (bossId) contactedBossIds.add(bossId);
+      if (!bossId) continue;
+      const route = typeof record === 'object' ? matchJobFromText(CFG.jobs_config, record?.job_name || '') : null;
+      contactedBossIds.add(contactKey(bossId, record?.job_key || route?.job?.job_key || 'legacy'));
     } catch {
       const bossId = normalizeBossId(line);
-      if (bossId) contactedBossIds.add(bossId);
+      if (bossId) contactedBossIds.add(contactKey(bossId, 'legacy'));
     }
   }
 }
@@ -260,23 +300,25 @@ function loadDirectGreetContactedIds() {
   }
 }
 
-function hasContactedBossId(bossId) {
-  return contactedBossIds.has(normalizeBossId(bossId));
+function hasContactedBossId(bossId, jobKey) {
+  return contactedBossIds.has(contactKey(bossId, jobKey));
 }
 
 function rememberContactedBossId(candidate) {
   const bossId = normalizeBossId(candidate?.boss_id);
-  if (!bossId || contactedBossIds.has(bossId)) return;
+  const key = contactKey(bossId, candidate?.job_key);
+  if (!bossId || contactedBossIds.has(key)) return;
   fs.appendFileSync(CFG.contacted_boss_ids_file, JSON.stringify({
     boss_id: bossId,
-    candidate_id: bossCandidateId(bossId),
+    candidate_id: candidate?.candidate_id || bossApplicationId(bossId, candidate?.job_key),
     name: candidate?.name || '',
     job_name: candidate?.job_name || CFG.job_name,
+    job_key: candidate?.job_key || '',
     contacted_at: candidate?.message_sent_at || nowIso(),
     source: candidate?.source || 'inbound_chat',
     evidence: candidate?.contact_evidence || 'message_confirmed_in_thread',
   }) + '\n');
-  contactedBossIds.add(bossId);
+  contactedBossIds.add(key);
 }
 
 function candidatesMap() {
@@ -341,7 +383,7 @@ function putCandidate(patch) {
   } else {
     stateRoot.candidates[merged.candidate_id] = merged;
     stateRoot.updated_at = nowIso();
-    stateRoot.config = { ...(stateRoot.config || {}), job_name: CFG.job_name };
+    stateRoot.config = { ...(stateRoot.config || {}), job_name: CFG.job_name, jobs_file: CFG.jobs_file };
   }
   dirty.set(merged.candidate_id, merged);
 }
@@ -630,6 +672,196 @@ async function gotoChat() {
   return checked;
 }
 
+async function selectChatJobFilter() {
+  const job = CFG.selected_job;
+  if (!job) throw new Error('paused_job_filter_required');
+  const aliases = job.boss_job_names;
+  const normalizedAliases = aliases.map(value => normalizeJobText(value));
+  const allJobAliases = enabledJobs(CFG.jobs_config)
+    .flatMap(item => item.boss_job_names)
+    .filter(Boolean);
+  const normalizedAllJobAliases = allJobAliases.map(value => normalizeJobText(value));
+  const probe = JSON.parse((await evalTarget(`(() => {
+    const aliases = ${JSON.stringify(aliases)};
+    const normalizedAliases = ${JSON.stringify(normalizedAliases)};
+    const allJobAliases = ${JSON.stringify(allJobAliases)};
+    const normalizedAllJobAliases = ${JSON.stringify(normalizedAllJobAliases)};
+    const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
+      .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const visible = el => {
+      const r = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return r && r.width > 0 && r.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden';
+    };
+    const textOf = el => (el.innerText || el.textContent || '').trim();
+    const matchesJob = text => {
+      const normalized = normalize(text);
+      return normalizedAliases.some(alias => alias && normalized.includes(alias));
+    };
+    const matchesAnyConfiguredJob = text => {
+      const normalized = normalize(text);
+      return normalizedAllJobAliases.some(alias => alias && normalized.includes(alias));
+    };
+    const controlHint = el => [
+      el.className?.baseVal || el.className || '',
+      el.getAttribute?.('role') || '',
+      el.getAttribute?.('aria-label') || '',
+      el.getAttribute?.('title') || '',
+      el.parentElement?.className?.baseVal || el.parentElement?.className || ''
+    ].join(' ');
+    const topNodes = [...document.querySelectorAll('button,a,div,span,[role="button"],input')]
+      .filter(visible)
+      .filter(el => !el.closest('.geek-item,.chat-conversation,[class*="message"],[class*="editor"]'))
+      .map(el => ({ el, text: textOf(el), rect: el.getBoundingClientRect(), hint: controlHint(el) }))
+      .filter(item => item.rect.y >= 20 && item.rect.y < 360 && item.rect.x >= 80 && item.rect.x < 1100)
+      .filter(item => item.rect.width <= 800 && item.rect.height <= 160)
+      .filter(item =>
+        item.text === '全部职位' ||
+        matchesAnyConfiguredJob(item.text) ||
+        /chat-job-search|job-select|job-filter|职位|岗位/i.test(item.hint)
+      )
+      .sort((a, b) => {
+        const aHint = /chat-job-search|job-select|job-filter/i.test(a.hint) ? 0 : 1;
+        const bHint = /chat-job-search|job-select|job-filter/i.test(b.hint) ? 0 : 1;
+        if (aHint !== bHint) return aHint - bHint;
+        const aLeaf = a.el.children.length ? 1 : 0;
+        const bLeaf = b.el.children.length ? 1 : 0;
+        if (aLeaf !== bLeaf) return aLeaf - bLeaf;
+        return (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height);
+      });
+    const current = topNodes.find(item => matchesJob(item.text));
+    const currentLooksInteractive = current && (
+      /button|combobox|listbox|menu|select|dropdown|job-search|job-select|job-filter/i.test(
+        [current.el.tagName, current.hint].join(' ')
+      ) ||
+      !!current.el.onclick ||
+      getComputedStyle(current.el).cursor === 'pointer'
+    );
+    if (current && currentLooksInteractive) {
+      return JSON.stringify({
+        ok: true,
+        alreadySelected: true,
+        selectedText: current.text,
+        aliases,
+        candidates: topNodes.slice(0, 12).map(item => ({
+          text: item.text.slice(0, 120),
+          tag: item.el.tagName,
+          className: String(item.el.className || '').slice(0, 160),
+          hint: item.hint.slice(0, 200),
+          rect: { x: item.rect.x, y: item.rect.y, width: item.rect.width, height: item.rect.height }
+        }))
+      });
+    }
+    const trigger = topNodes.find(item => item.text === '全部职位')
+      || topNodes.find(item => matchesAnyConfiguredJob(item.text))
+      || topNodes[0];
+    if (!trigger) {
+      const samples = [...document.querySelectorAll('button,a,div,span,[role="button"],input')]
+        .filter(visible)
+        .map(el => {
+          const rect = el.getBoundingClientRect();
+          return {
+            text: textOf(el).slice(0, 120),
+            tag: el.tagName,
+            className: String(el.className || '').slice(0, 160),
+            hint: controlHint(el).slice(0, 200),
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          };
+        })
+        .filter(item => item.rect.y >= 20 && item.rect.y < 360 && item.rect.x >= 80 && item.rect.x < 1100)
+        .slice(0, 40);
+      return JSON.stringify({ ok: false, reason: 'job_filter_trigger_not_found', aliases, allJobAliases, samples });
+    }
+    const marker = 'job-filter-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);
+    document.querySelectorAll('[data-boss-auto-job-filter]').forEach(el => el.removeAttribute('data-boss-auto-job-filter'));
+    trigger.el.setAttribute('data-boss-auto-job-filter', marker);
+    return JSON.stringify({
+      ok: true,
+      alreadySelected: false,
+      selector: '[data-boss-auto-job-filter="' + marker + '"]',
+      triggerText: trigger.text,
+      triggerHint: trigger.hint,
+      aliases
+    });
+  })()`)).value);
+  appendLog({ action: 'job_filter_probe', result: probe.ok ? 'ok' : 'failed', job_key: job.job_key, detail: probe });
+  lastJobFilterDetail = { step: 'probe', ...probe };
+  if (!probe.ok) throw new Error(`paused_${probe.reason || 'job_filter_unavailable'}`);
+  if (probe.alreadySelected) return probe;
+
+  await clickSelector(probe.selector);
+  await sleep(500);
+  const option = JSON.parse((await evalTarget(`(() => {
+    const normalizedAliases = ${JSON.stringify(normalizedAliases)};
+    const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
+      .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const visible = el => {
+      const r = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return r && r.width > 0 && r.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden';
+    };
+    const candidates = [...document.querySelectorAll('li,button,a,div,span,[role="option"],[role="menuitem"]')]
+      .filter(visible)
+      .filter(el => !el.closest('.geek-item,.chat-conversation,[class*="message"]'))
+      .map(el => ({ el, text: (el.innerText || el.textContent || '').trim(), rect: el.getBoundingClientRect() }))
+      .filter(item => item.rect.width <= 600 && item.rect.height <= 120)
+      .filter(item => {
+        const normalized = normalize(item.text);
+        return normalizedAliases.some(alias => alias && normalized.includes(alias));
+      })
+      .sort((a, b) => {
+        const aLeaf = a.el.children.length ? 1 : 0;
+        const bLeaf = b.el.children.length ? 1 : 0;
+        if (aLeaf !== bLeaf) return aLeaf - bLeaf;
+        return (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height);
+      });
+    const target = candidates[0];
+    if (!target) return JSON.stringify({ ok: false, reason: 'job_filter_option_not_found' });
+    const marker = 'job-option-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);
+    document.querySelectorAll('[data-boss-auto-job-option]').forEach(el => el.removeAttribute('data-boss-auto-job-option'));
+    target.el.setAttribute('data-boss-auto-job-option', marker);
+    return JSON.stringify({ ok: true, selector: '[data-boss-auto-job-option="' + marker + '"]', text: target.text });
+  })()`)).value);
+  appendLog({ action: 'job_filter_option', result: option.ok ? 'found' : 'failed', job_key: job.job_key, detail: option });
+  lastJobFilterDetail = { step: 'option', ...option };
+  if (!option.ok) throw new Error(`paused_${option.reason || 'job_filter_option_not_found'}`);
+
+  await clickSelector(option.selector);
+  await sleep(1200);
+  const verified = JSON.parse((await evalTarget(`(() => {
+    const normalizedAliases = ${JSON.stringify(normalizedAliases)};
+    const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
+      .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const visible = el => {
+      const r = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return r && r.width > 0 && r.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden';
+    };
+    const controls = [...document.querySelectorAll('button,a,div,span,[role="button"],input')]
+      .filter(visible)
+      .filter(el => !el.closest('.geek-item,.chat-conversation,[class*="message"],[class*="editor"]'))
+      .map(el => ({ text: (el.innerText || el.textContent || '').trim(), rect: el.getBoundingClientRect() }))
+      .filter(item => item.rect.y >= 50 && item.rect.y < 280 && item.rect.x >= 120 && item.rect.x < 850)
+      .filter(item => item.rect.width <= 600 && item.rect.height <= 120);
+    const selected = controls.find(item => {
+      const normalized = normalize(item.text);
+      return normalizedAliases.some(alias => alias && normalized.includes(alias));
+    });
+    return JSON.stringify({
+      ok: !!selected,
+      selectedText: selected?.text || '',
+      itemCount: document.querySelectorAll('.geek-item[data-id],.geek-item').length
+    });
+  })()`)).value);
+  appendLog({ action: 'job_filter_verify', result: verified.ok ? 'ok' : 'failed', job_key: job.job_key, detail: verified });
+  lastJobFilterDetail = { step: 'verify', ...verified };
+  if (!verified.ok) throw new Error('paused_job_filter_verification_failed');
+  return verified;
+}
+
 async function resetChatListToTop() {
   const expr = `(() => {
     const el = document.querySelector('.geek-item');
@@ -677,13 +909,15 @@ async function readChatCardsOnePage() {
     const items = [...document.querySelectorAll('.geek-item[data-id],.geek-item')].slice(0, ${CFG.max_scan_per_run}).map((el, idx) => {
       const lines = (el.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
       const id = el.getAttribute('data-id') || el.id || ('chat_' + idx);
-      el.setAttribute('data-lobster-chat-target', id);
+      const marker = 'chat-card-' + Date.now() + '-' + idx + '-' + Math.floor(Math.random() * 1000000);
+      const clickable = el.closest('.geek-item-wrap,[role="listitem"]') || el;
+      clickable.setAttribute('data-lobster-chat-card', marker);
       const invalidName = x => !x || x.length < 2 || x.length > 8 || /^[+＋]/.test(x) || /更多选项|打招呼|立即沟通|继续沟通|已沟通|已联系/.test(x) || /^(今天|昨天|前天|刚刚|\\d+分钟前|\\d+小时前|\\d{1,2}:\\d{2}|\\d{1,2}月\\d{1,2}日|\\d{4}[./-]\\d{1,2}[./-]\\d{1,2})$/.test(x) || /Python|Golang|Go|Java|C\\+\\+|Rust|JavaScript|TypeScript|React|Vue|Node\\.js|Spring|Django|Flask|FastAPI|SQL|Linux/i.test(x) || /后端|前端|测试|算法|运维|产品|运营|开发|架构|数据|人工智能|实习|项目|工程师|经理|主管|专员|顾问|助理/.test(x) || x.includes(${JSON.stringify(CFG.job_name)});
       const name = lines.find(x => !invalidName(x)) || '';
       const unread = /^\\d+$/.test(lines[0] || '');
       const timeText = lines.find(x => /^(今天|昨天|前天|刚刚|\\d+分钟前|\\d+小时前|\\d{1,2}:\\d{2})$/.test(x)) || '';
       const latestFromSelfHint = /\\[(?:送达|已读|未读)\\]/.test(lines.join('\\n'));
-      return { idx, boss_id: id, name, text: lines.join('\\n'), unread, timeText, latestFromSelfHint };
+      return { idx, boss_id: id, dom_marker: marker, name, text: lines.join('\\n'), unread, timeText, latestFromSelfHint };
     });
     return JSON.stringify({ captcha: /验证码|安全验证|拖动/.test(text), login: /请登录|扫码登录/.test(text) && !items.length, items });
   })()`;
@@ -736,19 +970,62 @@ async function readChatCardsWithScroll() {
 async function openChatAndReadDetail(item) {
   const prepared = JSON.parse((await evalTarget(`(() => {
     const bossId = ${JSON.stringify(item.boss_id || '')};
+    const domMarker = ${JSON.stringify(item.dom_marker || '')};
     const name = ${JSON.stringify(item.name || '')};
+    const jobName = ${JSON.stringify(item.job_name_raw || '')};
     const idx = ${JSON.stringify(item.idx || 0)};
-    const items = [...document.querySelectorAll('.geek-item[data-id],.geek-item')];
-    const exact = items.find(el => bossId && (el.getAttribute('data-id') === bossId || el.id === bossId));
-    const byName = items.find(el => name && (el.innerText || el.textContent || '').includes(name));
-    const el = exact || byName || null;
-    if (!el) return JSON.stringify({ ok: false, reason: 'chat_target_not_found', bossId, name });
-    const stable = bossId || el.getAttribute('data-id') || el.id || ('chat_' + idx);
-    el.setAttribute('data-lobster-chat-target', stable);
-    return JSON.stringify({ ok: true, selector: '[data-lobster-chat-target="' + stable.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"') + '"]', bossId: stable });
+    const normalizeId = value => String(value || '').trim().replace(/^_/, '');
+    const items = [...document.querySelectorAll('.geek-item[data-id],.geek-item,.geek-item-wrap,[role="listitem"]')];
+    document.querySelectorAll('[data-lobster-chat-open]').forEach(el => el.removeAttribute('data-lobster-chat-open'));
+    const matchesJob = el => !jobName || (el.innerText || el.textContent || '').includes(jobName);
+    const marked = domMarker ? document.querySelector('[data-lobster-chat-card="' + domMarker.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"') + '"]') : null;
+    const exact = items.find(el => bossId && (
+      normalizeId(el.getAttribute('data-id')) === normalizeId(bossId) ||
+      normalizeId(el.id) === normalizeId(bossId) ||
+      normalizeId(el.querySelector?.('.geek-item[data-id]')?.getAttribute('data-id')) === normalizeId(bossId)
+    ) && matchesJob(el));
+    const byName = items
+      .filter(el => name && (el.innerText || el.textContent || '').includes(name) && matchesJob(el))
+      .sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        return (ar.width * ar.height) - (br.width * br.height);
+      })[0];
+    const found = marked || exact || byName || null;
+    if (!found) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'chat_target_not_found',
+        bossId,
+        domMarker,
+        name,
+        visible: items.slice(0, 12).map(el => ({
+          id: el.getAttribute?.('data-id') || el.id || '',
+          text: (el.innerText || el.textContent || '').trim().slice(0, 160),
+          className: String(el.className || '').slice(0, 120)
+        }))
+      });
+    }
+    const el = found.closest?.('.geek-item-wrap,[role="listitem"]') || found;
+    const stable = bossId || found.getAttribute?.('data-id') || found.id || ('chat_' + idx);
+    const marker = 'open_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);
+    el.setAttribute('data-lobster-chat-open', marker);
+    return JSON.stringify({
+      ok: true,
+      selector: '[data-lobster-chat-open="' + marker + '"]',
+      bossId: stable,
+      source: marked ? 'scan_marker' : exact ? 'normalized_id' : 'name_job'
+    });
   })()`)).value);
 
-  if (!prepared.ok) return { ok: false, stale: true, reason: prepared.reason, detail: {} };
+  if (!prepared.ok) {
+    return {
+      ok: false,
+      stale: true,
+      reason: prepared.reason,
+      detail: prepared,
+    };
+  }
 
   if (!CFG.dryRun) {
     await clickSelector(prepared.selector);
@@ -878,7 +1155,7 @@ async function openChatAndReadDetail(item) {
   })()`;
 
   const detail = JSON.parse((await evalTarget(expr)).value);
-  return { ok: true, stale: false, detail };
+  return { ok: true, stale: false, source: prepared.source || '', detail };
 }
 
 /* ================================================================
@@ -1197,12 +1474,14 @@ async function processInbound() {
     });
     throw new Error('paused_chat_page_unavailable');
   }
+  await selectChatJobFilter();
 
   // Interleaved scroll + process: process candidates while they're still in the DOM
   const allItems = new Map();
   const scored = [];
   let detailReads = 0;
   let failures = 0;
+  let consecutiveOpenFailures = 0;
 
   const reset = await resetChatListToTop();
   appendLog({ action: 'chat_list_reset', result: reset.ok ? 'ok' : 'failed', detail: reset });
@@ -1217,8 +1496,12 @@ async function processInbound() {
     let newCount = 0;
     const newItems = [];
     for (const item of data.items || []) {
-      if (!allItems.has(item.boss_id)) {
-        allItems.set(item.boss_id, item);
+      const route = matchJobFromText(CFG.jobs_config, item.text);
+      const itemKey = `${item.boss_id}:${route.job?.job_key || route.status}:${route.matched_alias || ""}`;
+      if (!allItems.has(itemKey)) {
+        item.jobRoute = route;
+        item.job_name_raw = route.matched_alias || "";
+        allItems.set(itemKey, item);
         newCount++;
         newItems.push(item);
       }
@@ -1233,24 +1516,74 @@ async function processInbound() {
       }
       if (!item.name || invalidCandidateName(item.name)) continue;
 
+      const observedRoute = item.jobRoute || matchJobFromText(CFG.jobs_config, item.text);
+      const selectedRoute = { status: 'matched', job: CFG.selected_job, matched_alias: CFG.selected_job.display_name };
+      if (observedRoute.status === 'matched' && observedRoute.job.job_key !== CFG.job_key) {
+        jobRouteCounters.filtered += 1;
+        counters.skipped++;
+        appendLog({
+          source: 'inbound_chat',
+          action: 'identify_job',
+          result: 'skip',
+          error_code: 'job_filter_card_mismatch',
+          name: item.name,
+          boss_id: item.boss_id || '',
+          selected_job_key: CFG.job_key,
+          observed_job_key: observedRoute.job.job_key,
+          card_text: String(item.text || '').slice(0, 600),
+        });
+        continue;
+      }
+      const route = selectedRoute;
+      jobRouteCounters.matched[route.job.job_key] = (jobRouteCounters.matched[route.job.job_key] || 0) + 1;
+
       const bossId = normalizeBossId(item.boss_id);
       if (!bossId) {
         counters.skipped++;
         appendLog({ source: 'inbound_chat', action: 'screen_inbound', result: 'skip', error_code: 'missing_boss_id', name: item.name });
         continue;
       }
-      const id = bossCandidateId(bossId);
-      const existing = getCandidate(id);
+      const id = bossApplicationId(bossId, route.job.job_key);
+      const legacyCandidate = getCandidate(bossCandidateId(bossId));
+      const existing = getCandidate(id) || (
+        legacyCandidate && (!legacyCandidate.job_name || legacyCandidate.job_name === route.job.display_name)
+          ? legacyCandidate
+          : null
+      );
+      const baseCandidate = {
+        candidate_id: id,
+        person_id: bossCandidateId(bossId),
+        application_id: id,
+        boss_id: bossId,
+        name: item.name,
+        school: '',
+        source: 'inbound_chat',
+        ...jobFields(route, item.text),
+        boss_job_name_raw: observedRoute.matched_alias || CFG.selected_job.display_name,
+        job_match_status: observedRoute.status === 'matched' ? 'verified' : 'selected_filter',
+        job_match_source: 'selected_job_filter',
+      };
 
       counters.scanned++;
       detailReads++;
+      appendLog({
+        candidate_id: id,
+        person_id: baseCandidate.person_id,
+        boss_id: bossId,
+        source: 'inbound_chat',
+        action: 'identify_job',
+        result: 'matched',
+        job_key: route.job.job_key,
+        job_name: route.job.display_name,
+        matched_alias: route.matched_alias,
+      });
 
       if (CFG.dryRun) {
         const score = directContactDecision();
         scored.push({ item, id, score, detail: { text: item.text } });
         counters.eligible++;
         putCandidate({
-          candidate_id: id, boss_id: bossId, name: item.name, school: '', job_name: CFG.job_name, source: 'inbound_chat',
+          ...baseCandidate,
           status: score.rating >= CFG.auto_send_threshold && score.hard_filters_passed ? 'eligible' : 'screened',
           rating: score.rating, hard_filters_passed: score.hard_filters_passed,
           decision: score.rating >= CFG.auto_send_threshold && score.hard_filters_passed ? 'auto_contact' : 'skip',
@@ -1265,17 +1598,36 @@ async function processInbound() {
 
       // Real run: open chat and read detail (item is still in DOM from readChatCardsOnePage)
       const opened = await openChatAndReadDetail(item);
-      if (opened.captcha) throw new Error('paused_captcha_detected');
+      if (opened.detail?.captcha) throw new Error('paused_captcha_detected');
       if (opened.stale) {
+        lastOpenChatDetail = {
+          at: nowIso(),
+          boss_id: bossId,
+          candidate_name: item.name,
+          job_key: route.job.job_key,
+          reason: opened.reason || 'chat_target_not_found',
+          detail: opened.detail || null,
+        };
+        consecutiveOpenFailures++;
         counters.skipped++;
         putCandidate({
-          candidate_id: id, boss_id: bossId, name: item.name, school: '', job_name: CFG.job_name, source: 'inbound_chat',
+          ...baseCandidate,
           last_error: opened.reason || 'chat_target_not_found', last_observation: 'chat_target_stale',
           history_event: { action: 'open_chat', result: 'skipped', error_code: opened.reason || 'chat_target_not_found' }
         });
         appendLog({ candidate_id: id, boss_id: bossId, source: 'inbound_chat', action: 'open_chat', result: 'skipped', error_code: opened.reason || 'chat_target_not_found' });
+        if (consecutiveOpenFailures >= 3) throw new Error('paused_chat_targets_unavailable');
         continue;
       }
+      lastOpenChatDetail = {
+        at: nowIso(),
+        boss_id: bossId,
+        candidate_name: item.name,
+        job_key: route.job.job_key,
+        source: opened.source || '',
+        ok: true,
+      };
+      consecutiveOpenFailures = 0;
 
       if (!opened.detail.input) {
         throw new Error('paused_resume_panel_not_found');
@@ -1313,7 +1665,7 @@ async function processInbound() {
             continue;
           }
           const attachmentCandidate = {
-            candidate_id: stableId, boss_id: bossId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name, source: 'inbound_chat',
+            ...baseCandidate, candidate_id: stableId, application_id: stableId, school: schoolFromDetail,
             status: 'attachment_sent_by_candidate',
             rating: score.rating, hard_filters_passed: true,
             decision: 'collect_resume', skip_reason: 'candidate_already_sent_resume',
@@ -1344,7 +1696,7 @@ async function processInbound() {
             candidate_id: stableId, boss_id: bossId, source: 'inbound_chat',
             action: 'send_resume_request',
             result: 'skipped', error_code: 'latest_message_from_self',
-            contacted_boss_id_recorded: hasContactedBossId(bossId),
+            contacted_boss_id_recorded: hasContactedBossId(bossId, route.job.job_key),
             last_message_text: opened.detail.lastMessageText || '',
             last_message_owner: opened.detail.lastMessageOwner || ''
           });
@@ -1360,15 +1712,15 @@ async function processInbound() {
           continue;
         }
         const latestRoot = readLatestStateRoot();
-        const alreadyRequested = findAlreadyRequestedInRoot(latestRoot, { candidate_id: stableId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name });
-        const verifiedRequest = hasContactedBossId(bossId) || hasVerifiedRequestEvidence(alreadyRequested || existing);
+        const alreadyRequested = findAlreadyRequestedInRoot(latestRoot, { candidate_id: stableId, name: item.name, school: schoolFromDetail, job_name: route.job.display_name });
+        const verifiedRequest = hasContactedBossId(bossId, route.job.job_key) || hasVerifiedRequestEvidence(alreadyRequested || existing);
         if (verifiedRequest) {
           counters.skipped++;
           appendLog({
             candidate_id: stableId, boss_id: bossId, source: 'inbound_chat',
             action: 'send_resume_request', result: 'deduplicated',
             error_code: 'verified_request_already_sent',
-            contacted_boss_id_recorded: hasContactedBossId(bossId),
+            contacted_boss_id_recorded: hasContactedBossId(bossId, route.job.job_key),
             last_message_text: opened.detail.lastMessageText || ''
           });
           continue;
@@ -1384,7 +1736,7 @@ async function processInbound() {
           if (sent.alreadySent) {
             const contactedAt = nowIso();
             const contactedCandidate = {
-              candidate_id: stableId, boss_id: bossId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name, source: 'inbound_chat',
+              ...baseCandidate, candidate_id: stableId, application_id: stableId, school: schoolFromDetail,
               status: 'attachment_requested', rating: score.rating, hard_filters_passed: true,
               decision: 'auto_contact', message_sent_at: contactedAt,
               skip_reason: sent.reason || 'already_contacted',
@@ -1403,7 +1755,7 @@ async function processInbound() {
             counters.sent++;
             const contactedAt = nowIso();
             const contactedCandidate = {
-              candidate_id: stableId, boss_id: bossId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name, source: 'inbound_chat',
+              ...baseCandidate, candidate_id: stableId, application_id: stableId, school: schoolFromDetail,
               status: 'attachment_requested', rating: score.rating, hard_filters_passed: true,
               decision: 'auto_contact', skip_reason: null, message_sent_at: contactedAt,
               last_observation: 'message_sent',
@@ -1419,7 +1771,7 @@ async function processInbound() {
             failures++;
             counters.failed++;
             putCandidate({
-              candidate_id: stableId, boss_id: bossId, name: item.name, school: schoolFromDetail, job_name: CFG.job_name, source: 'inbound_chat',
+              ...baseCandidate, candidate_id: stableId, application_id: stableId, school: schoolFromDetail,
               last_error: 'send_confirm_failed', last_observation: 'send_confirm_failed',
               history_event: { action: 'send_resume_request', result: 'failed', error_code: 'send_confirm_failed' }
             });
@@ -1477,6 +1829,12 @@ async function main() {
       skip_chat: CFG.skipChat,
       max_greet_per_run: CFG.max_greet_per_run,
       proxy: CFG.proxy,
+      jobs_file: CFG.jobs_file,
+      jobs: enabledJobs(CFG.jobs_config).map(job => ({
+        job_key: job.job_key,
+        display_name: job.display_name,
+        feishu_configured: /^\d+$/.test(job.feishu_hire_job_id),
+      })),
     }));
     return;
   }
@@ -1522,6 +1880,9 @@ async function main() {
     status: pausedReason ? 'paused' : 'ok',
     mode: CFG.mode,
     ...counters,
+    job_routes: jobRouteCounters,
+    job_filter: lastJobFilterDetail,
+    open_chat: lastOpenChatDetail,
     paused_reason: pausedReason,
     next: pausedReason ? 'screen-and-greet' : (CFG.skipChat ? 'done' : 'collect-resumes'),
     run_id: CFG.runId,

@@ -127,13 +127,24 @@ function isUnsignedInteger(value) {
   return typeof value === "string" && /^[0-9]+$/.test(value.trim());
 }
 
-function sanitizeManifest(filePath, resumeSourceId) {
+function prepareManifest(filePath, resumeSourceId, jobKey) {
   if (!filePath || !existsSync(filePath)) return filePath;
 
-  const records = parseManifestRecords(filePath).filter((record) => record && typeof record === "object");
-  if (!records.length) return filePath;
+  const allRecords = parseManifestRecords(filePath).filter((record) => record && typeof record === "object");
+  let records = jobKey
+    ? allRecords.filter((record) => String(record.job_key || "").trim() === jobKey)
+    : allRecords;
+  if (!records.length && !jobKey) return filePath;
+  if (!records.length) {
+    records = [{
+      candidate_id: `__no_candidates_for_job__:${jobKey}`,
+      job_key: jobKey,
+      boss_status: "not_eligible",
+      resume_source_id: isUnsignedInteger(resumeSourceId) ? resumeSourceId : "0",
+    }];
+  }
 
-  let changed = false;
+  let changed = records.length !== allRecords.length;
   const sanitized = records.map((record) => {
     const next = { ...record };
     const current = String(next.resume_source_id || "").trim();
@@ -167,11 +178,13 @@ const baseEnv = {
 };
 const manifestFile = baseEnv.FEISHU_HIRE_SYNC_MANIFEST || defaultManifestFile;
 const resumeSourceId = baseEnv.FEISHU_HIRE_RESUME_SOURCE_ID || "";
-const sanitizedManifestFile = sanitizeManifest(manifestFile, resumeSourceId);
+const syncJobKey = baseEnv.BOSS_SYNC_JOB_KEY || "";
+const sanitizedManifestFile = prepareManifest(manifestFile, resumeSourceId, syncJobKey);
+const scopedResumeDir = syncJobKey ? path.join(defaultResumeDir, syncJobKey) : defaultResumeDir;
 
 const env = {
   ...baseEnv,
-  RESUME_DIR: baseEnv.FEISHU_HIRE_SYNC_RESUME_DIR || baseEnv.FEISHU_HIRE_RESUME_DIR || defaultResumeDir,
+  RESUME_DIR: baseEnv.FEISHU_HIRE_SYNC_RESUME_DIR || baseEnv.FEISHU_HIRE_RESUME_DIR || scopedResumeDir,
   FEISHU_HIRE_UPLOAD_MODE: baseEnv.FEISHU_HIRE_UPLOAD_MODE || "talent_application",
   FEISHU_HIRE_CANDIDATE_MANIFEST: sanitizedManifestFile,
   FEISHU_HIRE_UPLOAD_STATE:

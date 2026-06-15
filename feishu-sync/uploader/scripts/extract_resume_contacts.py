@@ -673,15 +673,23 @@ def parse_basic_info(text: str, lines, pdf_path: Path):
     filename_match = re.search(r"】([\u4e00-\u9fa5·]{2,6})\s", pdf_path.name)
     if filename_match:
         name = filename_match.group(1)
+    weak_name = (
+        not name
+        or name in ("求职者", "候选人", "牛人", "匿名用户")
+        or re.fullmatch(r"[\u4e00-\u9fa5·]{1,4}(先生|女士|同学)", name)
+    )
     if top_lines:
         for line in top_lines[:5]:
             candidate = re.split(r"[|｜:：,，\s]", line.strip())[0]
-            if name:
+            if name and not weak_name:
                 break
             if candidate in ("电话", "邮箱", "求职意向", "教育经历", "个人奖项"):
                 continue
             if re.fullmatch(r"[\u4e00-\u9fa5·]{2,6}", candidate) and not section_kind(candidate):
+                if re.fullmatch(r"[\u4e00-\u9fa5·]{1,4}(先生|女士|同学)", candidate):
+                    continue
                 name = candidate
+                weak_name = False
                 break
 
     gender = ""

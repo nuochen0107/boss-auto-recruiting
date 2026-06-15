@@ -26,9 +26,10 @@ class FeishuApiError extends Error {
 }
 
 class ManualReviewRequiredError extends Error {
-  constructor(message) {
+  constructor(message, details = {}) {
     super(message);
     this.name = "ManualReviewRequiredError";
+    this.details = details;
   }
 }
 
@@ -40,6 +41,7 @@ function parseArgs(argv) {
     manifest: process.env.FEISHU_HIRE_CANDIDATE_MANIFEST || "",
     mode: process.env.FEISHU_HIRE_UPLOAD_MODE || "talent_application",
     limit: 0,
+    deleteAfterSuccess: process.env.FEISHU_HIRE_DELETE_AFTER_SUCCESS === "1",
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -51,6 +53,7 @@ function parseArgs(argv) {
     else if (arg === "--manifest") args.manifest = argv[++i];
     else if (arg === "--mode") args.mode = argv[++i];
     else if (arg === "--limit") args.limit = Math.max(0, Number(argv[++i]) || 0);
+    else if (arg === "--delete-after-success") args.deleteAfterSuccess = true;
     else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -119,6 +122,13 @@ function normalizeLookupKey(value) {
 function normalizeIdentityText(value) {
   if (typeof value !== "string") return "";
   return value.normalize("NFKC").replace(/\s+/g, "").trim().toLowerCase();
+}
+
+function isWeakCandidateName(value) {
+  const normalized = normalizeIdentityText(value);
+  return !normalized
+    || /^(求职者|候选人|牛人|匿名用户)$/.test(normalized)
+    || /^[\u4e00-\u9fa5·]{1,4}(先生|女士|同学)$/.test(normalized);
 }
 
 function educationSchoolNames(educationList = []) {
@@ -431,9 +441,15 @@ async function ensureSafeTalentReuse(token, talentId, meta) {
   const talent = await getTalentDetail(token, talentId);
   const expectedName = normalizeIdentityText(meta.name);
   const actualName = normalizeIdentityText(talent.name);
-  if (expectedName && (!actualName || actualName !== expectedName)) {
+  if (expectedName && !isWeakCandidateName(meta.name) && (!actualName || actualName !== expectedName)) {
     throw new ManualReviewRequiredError(
       `Existing talent ${talentId} name mismatch: expected "${meta.name}", got "${talent.name || "unknown"}"`,
+      {
+        reason_code: "existing_talent_name_mismatch",
+        talent_id: talentId,
+        expected_name: meta.name || "",
+        actual_name: talent.name || "",
+      },
     );
   }
 
@@ -446,6 +462,12 @@ async function ensureSafeTalentReuse(token, talentId, meta) {
   if (!actualSchools.length || !normalizedExpectedSchools.some((school) => actualSchools.includes(school))) {
     throw new ManualReviewRequiredError(
       `Existing talent ${talentId} school mismatch: expected "${expectedSchools.join(" / ")}", got "${talent.schools.join(" / ") || "unknown"}"`,
+      {
+        reason_code: "existing_talent_school_mismatch",
+        talent_id: talentId,
+        expected_schools: expectedSchools,
+        actual_schools: talent.schools,
+      },
     );
   }
 }
@@ -643,8 +665,13 @@ function normalizeResumeMeta(meta, extracted) {
   if (!extracted) return meta;
 
   const contact = mergeExtractedContacts(meta, extracted).contact;
+  const extractedName = String(extracted.basic_info?.name || extracted.name || "").trim();
+  const preferredName = isWeakCandidateName(meta.name) && !isWeakCandidateName(extractedName)
+    ? extractedName
+    : meta.name;
   return {
     ...meta,
+    name: preferredName,
     mobile: contact.mobile || meta.mobile || "",
     mobile_country_code: contact.mobile_country_code || meta.mobile_country_code || "CN_1",
     email: contact.email || meta.email || "",
@@ -926,8 +953,7 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
     return { counted: false };
   }
   if (existing?.status === "needs_manual_review") {
-    console.log(`SKIP needs manual review: ${path.basename(filePath)} -> ${existing.error || "identity conflict"}`);
-    return { counted: false };
+    console.log(`RETRY needs manual review: ${path.basename(filePath)} -> ${existing.error || "identity conflict"}`);
   }
 
   let meta = baseMeta;
@@ -1044,7 +1070,12 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
 
   state.files[fingerprint] = result;
   if (normalizedIdentity) stateIndex.set(normalizedIdentity, result);
-  return { counted: true };
+  return {
+    counted: true,
+    fingerprint,
+    cleanupEligible: args.mode !== "talent_application"
+      || !!(result.talent?.talent_id && (result.application?.application_id || result.application?.duplicate)),
+  };
 }
 
 async function main() {
@@ -1057,6 +1088,14 @@ async function main() {
 
   if (!files.length) {
     console.log(`No resume files found in ${args.dir}`);
+    console.log(JSON.stringify({
+      status: "paused",
+      paused_reason: "paused_no_sync_candidates",
+      discovered: discoveredFiles.length,
+      selected: 0,
+      attempted: 0,
+      state: args.state,
+    }));
     return;
   }
 
@@ -1064,13 +1103,29 @@ async function main() {
   let failed = 0;
   let manualReview = 0;
   let attempted = 0;
+  let deletedAfterSuccess = 0;
+  let uploadedThisRun = 0;
+  const manualReviewDetails = [];
 
   for (const filePath of files) {
     if (args.limit > 0 && attempted >= args.limit) break;
     try {
       const outcome = await processFile({ args, token, state, manifest, stateIndex, filePath });
-      if (outcome?.counted !== false) attempted += 1;
+      if (outcome?.counted !== false) {
+        attempted += 1;
+        if (args.apply) uploadedThisRun += 1;
+      }
       await writeJson(args.state, state);
+      if (args.apply && args.deleteAfterSuccess && outcome?.cleanupEligible) {
+        await fs.unlink(filePath);
+        deletedAfterSuccess += 1;
+        if (outcome.fingerprint && state.files[outcome.fingerprint]) {
+          state.files[outcome.fingerprint].local_file_deleted = true;
+          state.files[outcome.fingerprint].local_file_deleted_at = new Date().toISOString();
+          await writeJson(args.state, state);
+        }
+        console.log(`CLEANED local resume after verified upload: ${path.basename(filePath)}`);
+      }
     } catch (error) {
       attempted += 1;
       if (error instanceof ManualReviewRequiredError) manualReview += 1;
@@ -1090,8 +1145,19 @@ async function main() {
         external_id: meta.external_id || "",
         resume_hash: hash,
         error: error.message,
+        manual_review: error instanceof ManualReviewRequiredError ? error.details : undefined,
         updated_at: new Date().toISOString(),
       };
+      if (error instanceof ManualReviewRequiredError) {
+        manualReviewDetails.push({
+          candidate_id: meta.candidate_id || "",
+          name: meta.name || "",
+          school: meta.school || "",
+          file: path.basename(filePath),
+          error: error.message,
+          ...error.details,
+        });
+      }
       await writeJson(args.state, state);
       if (error instanceof FeishuApiError && error.body?.code === 99991672) {
         console.error("FATAL missing Feishu application permission; stop this run before processing more resumes");
@@ -1103,7 +1169,18 @@ async function main() {
   const success = Object.values(state.files).filter((item) => item.status === "success").length;
   const status = failed > 0 ? "failed" : manualReview > 0 ? "completed_partial" : "completed";
   console.log(`Finished. discovered=${discoveredFiles.length} attempted=${attempted} total_success=${success} manual_review_this_run=${manualReview} failed_this_run=${failed} state=${args.state}`);
-  console.log(JSON.stringify({ status, discovered: discoveredFiles.length, attempted, total_success: success, manual_review_this_run: manualReview, failed_this_run: failed, state: args.state }));
+  console.log(JSON.stringify({
+    status,
+    discovered: discoveredFiles.length,
+    attempted,
+    uploaded_this_run: uploadedThisRun,
+    total_success: success,
+    manual_review_this_run: manualReview,
+    manual_review_details: manualReviewDetails,
+    failed_this_run: failed,
+    deleted_after_success: deletedAfterSuccess,
+    state: args.state,
+  }));
 
   if (failed > 0) process.exitCode = 1;
 }
