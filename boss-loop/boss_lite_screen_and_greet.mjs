@@ -173,6 +173,92 @@ async function clickSelector(selector) {
   });
 }
 
+async function clickChatListItem(selector) {
+  const result = JSON.parse((await evalTarget(`JSON.stringify((() => {
+    const selector = ${JSON.stringify(selector)};
+    const marked = document.querySelector(selector);
+    const item = marked?.closest?.('.geek-item') || marked?.querySelector?.('.geek-item') || marked;
+    if (!item) return { ok: false, reason: 'chat_item_not_found', selector };
+
+    const visible = el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden' &&
+        style?.opacity !== '0';
+    };
+    const findList = el => {
+      let node = el;
+      while (node && node !== document.body) {
+        if (
+          node.querySelectorAll?.('.geek-item').length &&
+          node.scrollHeight > node.clientHeight + 20
+        ) return node;
+        node = node.parentElement;
+      }
+      return null;
+    };
+
+    const list = findList(item);
+    if (!list) return { ok: false, reason: 'chat_list_container_not_found' };
+    item.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
+
+    const rect = item.getBoundingClientRect();
+    const listRect = list.getBoundingClientRect();
+    const viewportOk = rect.bottom > 0 && rect.top < window.innerHeight &&
+      rect.right > 0 && rect.left < window.innerWidth;
+    const insideList = rect.left >= listRect.left - 8 &&
+      rect.right <= listRect.right + 8 &&
+      rect.top >= listRect.top - 12 &&
+      rect.bottom <= listRect.bottom + 12;
+    const saneCard = rect.width >= 120 && rect.width <= 520 && rect.height >= 36 && rect.height <= 160;
+    if (!visible(item) || !viewportOk || !insideList || !saneCard) {
+      return {
+        ok: false,
+        reason: 'chat_item_not_safely_clickable',
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        listRect: { x: listRect.x, y: listRect.y, width: listRect.width, height: listRect.height },
+        viewport: { width: window.innerWidth, height: window.innerHeight }
+      };
+    }
+
+    const x = Math.round(Math.min(rect.right - 10, Math.max(rect.left + 10, rect.left + Math.min(90, rect.width / 2))));
+    const y = Math.round(rect.top + rect.height / 2);
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !(item.contains(hit) || hit.contains(item))) {
+      return {
+        ok: false,
+        reason: 'chat_item_click_point_obscured',
+        hitText: (hit?.innerText || hit?.textContent || '').trim().slice(0, 120),
+        hitClass: String(hit?.className || '').slice(0, 120),
+        point: { x, y },
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+      };
+    }
+
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      item.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        button: 0
+      }));
+    }
+    return {
+      ok: true,
+      selector,
+      point: { x, y },
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      listRect: { x: listRect.x, y: listRect.y, width: listRect.width, height: listRect.height },
+      text: (item.innerText || item.textContent || '').trim().slice(0, 180)
+    };
+  })())`)).value);
+  appendLog({ action: 'click_chat_item', result: result.ok ? 'ok' : 'failed', detail: result });
+  return result;
+}
+
 async function bindTarget() {
   const targets = await httpJson(`${CFG.proxy}/targets`);
   const boss = targets.find(t => t.type === 'page' && /zhipin\.com/.test(t.url) && /chat|recruiter|frame|recommend|web/.test(t.url));
@@ -910,8 +996,7 @@ async function readChatCardsOnePage() {
       const lines = (el.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
       const id = el.getAttribute('data-id') || el.id || ('chat_' + idx);
       const marker = 'chat-card-' + Date.now() + '-' + idx + '-' + Math.floor(Math.random() * 1000000);
-      const clickable = el.closest('.geek-item-wrap,[role="listitem"]') || el;
-      clickable.setAttribute('data-lobster-chat-card', marker);
+      el.setAttribute('data-lobster-chat-card', marker);
       const invalidName = x => !x || x.length < 2 || x.length > 8 || /^[+＋]/.test(x) || /更多选项|打招呼|立即沟通|继续沟通|已沟通|已联系/.test(x) || /^(今天|昨天|前天|刚刚|\\d+分钟前|\\d+小时前|\\d{1,2}:\\d{2}|\\d{1,2}月\\d{1,2}日|\\d{4}[./-]\\d{1,2}[./-]\\d{1,2})$/.test(x) || /Python|Golang|Go|Java|C\\+\\+|Rust|JavaScript|TypeScript|React|Vue|Node\\.js|Spring|Django|Flask|FastAPI|SQL|Linux/i.test(x) || /后端|前端|测试|算法|运维|产品|运营|开发|架构|数据|人工智能|实习|项目|工程师|经理|主管|专员|顾问|助理/.test(x) || x.includes(${JSON.stringify(CFG.job_name)});
       const name = lines.find(x => !invalidName(x)) || '';
       const unread = /^\\d+$/.test(lines[0] || '');
@@ -975,10 +1060,18 @@ async function openChatAndReadDetail(item) {
     const jobName = ${JSON.stringify(item.job_name_raw || '')};
     const idx = ${JSON.stringify(item.idx || 0)};
     const normalizeId = value => String(value || '').trim().replace(/^_/, '');
-    const items = [...document.querySelectorAll('.geek-item[data-id],.geek-item,.geek-item-wrap,[role="listitem"]')];
+    const visible = el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden' &&
+        style?.opacity !== '0';
+    };
+    const items = [...document.querySelectorAll('.geek-item[data-id],.geek-item')].filter(visible);
     document.querySelectorAll('[data-lobster-chat-open]').forEach(el => el.removeAttribute('data-lobster-chat-open'));
     const matchesJob = el => !jobName || (el.innerText || el.textContent || '').includes(jobName);
-    const marked = domMarker ? document.querySelector('[data-lobster-chat-card="' + domMarker.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"') + '"]') : null;
+    const markedRaw = domMarker ? document.querySelector('[data-lobster-chat-card="' + domMarker.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"') + '"]') : null;
+    const marked = markedRaw?.closest?.('.geek-item') || markedRaw;
     const exact = items.find(el => bossId && (
       normalizeId(el.getAttribute('data-id')) === normalizeId(bossId) ||
       normalizeId(el.id) === normalizeId(bossId) ||
@@ -1006,7 +1099,20 @@ async function openChatAndReadDetail(item) {
         }))
       });
     }
-    const el = found.closest?.('.geek-item-wrap,[role="listitem"]') || found;
+    const el = found.closest?.('.geek-item') || found;
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 120 || rect.width > 520 || rect.height < 36 || rect.height > 160) {
+      return JSON.stringify({
+        ok: false,
+        reason: 'chat_target_rect_unsafe',
+        bossId,
+        domMarker,
+        name,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        source: marked ? 'scan_marker' : exact ? 'normalized_id' : 'name_job'
+      });
+    }
     const stable = bossId || found.getAttribute?.('data-id') || found.id || ('chat_' + idx);
     const marker = 'open_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);
     el.setAttribute('data-lobster-chat-open', marker);
@@ -1014,6 +1120,7 @@ async function openChatAndReadDetail(item) {
       ok: true,
       selector: '[data-lobster-chat-open="' + marker + '"]',
       bossId: stable,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       source: marked ? 'scan_marker' : exact ? 'normalized_id' : 'name_job'
     });
   })()`)).value);
@@ -1028,7 +1135,15 @@ async function openChatAndReadDetail(item) {
   }
 
   if (!CFG.dryRun) {
-    await clickSelector(prepared.selector);
+    const clicked = await clickChatListItem(prepared.selector);
+    if (!clicked.ok) {
+      return {
+        ok: false,
+        stale: true,
+        reason: clicked.reason || 'chat_item_click_failed',
+        detail: { prepared, clicked },
+      };
+    }
     await sleep(1200);
   }
 

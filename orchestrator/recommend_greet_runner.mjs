@@ -21,8 +21,8 @@ const OLD_LOCK_DIR = path.join(DATA_DIR, "briefs/boss-auto.lockdir");
 const DIRECT_CONTACTED_FILE = path.join(DATA_DIR, "briefs/boss-direct-greet-contacted.jsonl");
 const PROXY = (process.env.CDP_PROXY_URL || "http://127.0.0.1:3456").replace(/\/$/, "");
 const MAX_CONSECUTIVE_FAILURES = Math.max(1, Number(process.env.BOSS_MAX_CONSECUTIVE_FAILURES || 3));
-const GREET_DELAY_MIN_MS = Math.max(1000, Number(process.env.BOSS_GREET_DELAY_MIN_MS || 3000));
-const GREET_DELAY_MAX_MS = Math.max(GREET_DELAY_MIN_MS, Number(process.env.BOSS_GREET_DELAY_MAX_MS || 8000));
+const GREET_DELAY_MIN_MS = Math.max(1000, Number(process.env.BOSS_GREET_DELAY_MIN_MS || 2000));
+const GREET_DELAY_MAX_MS = Math.max(GREET_DELAY_MIN_MS, Number(process.env.BOSS_GREET_DELAY_MAX_MS || 5000));
 
 let activeTask = null;
 let pauseRequested = false;

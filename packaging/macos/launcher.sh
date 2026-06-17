@@ -17,6 +17,52 @@ if [ ! -f "$CONFIG_DIR/default-config.yaml" ]; then
 fi
 if [ ! -f "$CONFIG_DIR/jobs.json" ]; then
   cp "$RESOURCES_DIR/defaults/jobs.json" "$CONFIG_DIR/jobs.json"
+elif [ -f "$RESOURCES_DIR/defaults/jobs.json" ]; then
+  "$RUNTIME_DIR/bin/node" -e '
+const fs = require("fs");
+const [defaultFile, configFile] = process.argv.slice(1);
+const defaults = JSON.parse(fs.readFileSync(defaultFile, "utf8"));
+const current = JSON.parse(fs.readFileSync(configFile, "utf8"));
+const jobs = Array.isArray(current.jobs) ? current.jobs : [];
+const byKey = new Map(jobs.map((job) => [String(job.job_key || ""), job]));
+let changed = false;
+for (const defaultJob of defaults.jobs || []) {
+  const key = String(defaultJob.job_key || "");
+  if (!key) continue;
+  const job = byKey.get(key);
+  if (!job) {
+    jobs.push(defaultJob);
+    byKey.set(key, defaultJob);
+    changed = true;
+    continue;
+  }
+  const aliases = new Set([
+    ...((Array.isArray(job.boss_job_names) ? job.boss_job_names : []).filter(Boolean)),
+    ...((Array.isArray(defaultJob.boss_job_names) ? defaultJob.boss_job_names : []).filter(Boolean)),
+    defaultJob.display_name,
+  ].filter(Boolean));
+  const nextAliases = Array.from(aliases);
+  if (JSON.stringify(job.boss_job_names || []) !== JSON.stringify(nextAliases)) {
+    job.boss_job_names = nextAliases;
+    changed = true;
+  }
+  if (!job.display_name && defaultJob.display_name) {
+    job.display_name = defaultJob.display_name;
+    changed = true;
+  }
+  if (!String(job.feishu_hire_job_id || "").trim() && String(defaultJob.feishu_hire_job_id || "").trim()) {
+    job.feishu_hire_job_id = String(defaultJob.feishu_hire_job_id).trim();
+    changed = true;
+  }
+  if (typeof job.enabled === "undefined") {
+    job.enabled = defaultJob.enabled !== false;
+    changed = true;
+  }
+}
+current.version = Math.max(Number(current.version) || 1, Number(defaults.version) || 1);
+current.jobs = jobs;
+if (changed) fs.writeFileSync(configFile, `${JSON.stringify(current, null, 2)}\n`);
+' "$RESOURCES_DIR/defaults/jobs.json" "$CONFIG_DIR/jobs.json"
 fi
 if [ ! -f "$CONFIG_DIR/feishu.env" ] && [ -f "$RESOURCES_DIR/defaults/feishu.env" ]; then
   cp "$RESOURCES_DIR/defaults/feishu.env" "$CONFIG_DIR/feishu.env"

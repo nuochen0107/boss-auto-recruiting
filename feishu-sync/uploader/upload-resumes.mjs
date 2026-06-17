@@ -948,19 +948,24 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
     return { counted: true };
   }
 
-  if (existing?.status === "success") {
-    console.log(`SKIP already uploaded: ${path.basename(filePath)} -> ${existing.mode}`);
-    return { counted: false };
-  }
-  if (existing?.status === "needs_manual_review") {
-    console.log(`RETRY needs manual review: ${path.basename(filePath)} -> ${existing.error || "identity conflict"}`);
-  }
-
   let meta = baseMeta;
   let extracted = null;
   if (args.mode === "talent_application") {
     extracted = extractContactsFromResume(filePath);
     meta = normalizeResumeMeta(baseMeta, extracted);
+  }
+
+  if (existing?.status === "success") {
+    const existingJobId = String(existing.job_id || existing.application?.job_id || "").trim();
+    const targetJobId = String(meta.job_id || "").trim();
+    if (!targetJobId || !existingJobId || existingJobId === targetJobId) {
+      console.log(`SKIP already uploaded: ${path.basename(filePath)} -> ${existing.mode}${existingJobId ? ` job=${existingJobId}` : ""}`);
+      return { counted: false };
+    }
+    console.log(`RETRY uploaded resume for new job: ${path.basename(filePath)} ${existingJobId} -> ${targetJobId}`);
+  }
+  if (existing?.status === "needs_manual_review") {
+    console.log(`RETRY needs manual review: ${path.basename(filePath)} -> ${existing.error || "identity conflict"}`);
   }
 
   if (isDebugEnabled()) {
@@ -1009,6 +1014,7 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
       candidate_uid: meta.candidate_uid || "",
       boss_candidate_uid: meta.boss_candidate_uid || "",
       external_id: meta.external_id || "",
+      job_id: meta.job_id || "",
       extracted_contacts: extracted ? mergeExtractedContacts(meta, extracted).contact : null,
       extracted_resume: extractedResumeSnapshot(meta, extracted),
       size: stat.size,
@@ -1028,6 +1034,7 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
     candidate_uid: meta.candidate_uid || "",
     boss_candidate_uid: meta.boss_candidate_uid || "",
     external_id: meta.external_id || "",
+    job_id: meta.job_id || "",
     size: stat.size,
     resume_hash: hash,
     attachment_id: attachment.id,
@@ -1046,6 +1053,7 @@ async function processFile({ args, token, state, manifest, stateIndex, filePath 
       talent = { talent_id: created.talent_id, reused: false, raw: created };
     }
     const application = await createApplication(token, talent.talent_id, meta);
+    if (application) application.job_id = meta.job_id;
     const talentPool = await addTalentToPool(token, talent.talent_id, meta.talent_pool_id);
     const note = await createNote(token, talent.talent_id, application.application_id, meta, filePath);
     result.talent = talent;
@@ -1143,6 +1151,7 @@ async function main() {
         candidate_uid: meta.candidate_uid || "",
         boss_candidate_uid: meta.boss_candidate_uid || "",
         external_id: meta.external_id || "",
+        job_id: meta.job_id || "",
         resume_hash: hash,
         error: error.message,
         manual_review: error instanceof ManualReviewRequiredError ? error.details : undefined,

@@ -114,9 +114,14 @@ function normalizeOptions(input = {}) {
   const selectedJobs = jobKey === "all" ? jobs : [findJobByKey(jobsConfig, jobKey)];
   const syncLimit = Math.max(1, Math.min(50, Number(input.syncLimit) || 1));
   const deleteUploadedResumes = input.deleteUploadedResumes === true;
-  const missingRoutes = selectedJobs.filter((job) => !/^\d+$/.test(job.feishu_hire_job_id));
-  if (["sync", "full"].includes(type) && missingRoutes.length) {
-    const error = new Error(`missing_feishu_job_routes:${missingRoutes.map((job) => job.job_key).join(",")}`);
+  const syncJobs = selectedJobs.filter((job) => /^\d+$/.test(job.feishu_hire_job_id));
+  if (["sync", "full"].includes(type) && jobKey !== "all" && !syncJobs.length) {
+    const error = new Error(`missing_feishu_job_routes:${selectedJobs.map((job) => job.job_key).join(",")}`);
+    error.statusCode = 422;
+    throw error;
+  }
+  if (["sync", "full"].includes(type) && !syncJobs.length) {
+    const error = new Error("no_feishu_job_routes_configured");
     error.statusCode = 422;
     throw error;
   }
@@ -128,6 +133,11 @@ function normalizeOptions(input = {}) {
     collectLimit,
     jobKey,
     selectedJobs: selectedJobs.map((job) => ({
+      job_key: job.job_key,
+      display_name: job.display_name,
+      feishu_hire_job_id: job.feishu_hire_job_id,
+    })),
+    syncJobs: syncJobs.map((job) => ({
       job_key: job.job_key,
       display_name: job.display_name,
       feishu_hire_job_id: job.feishu_hire_job_id,
@@ -171,6 +181,7 @@ function stagesFor(options) {
     FEISHU_HIRE_UPLOAD_MODE: "talent_application",
     BOSS_JOBS_FILE: options.jobsFile,
     BOSS_SYNC_JOB_KEY: options.jobKey === "all" ? "" : options.jobKey,
+    BOSS_SYNC_ONLY_CONFIGURED: options.jobKey === "all" ? "1" : "0",
     FEISHU_HIRE_UPLOAD_STATE: path.join(RUN_DIR, "feishu-hire-multi-job-state.json"),
     FEISHU_HIRE_DELETE_AFTER_SUCCESS: options.deleteUploadedResumes ? "1" : "0",
   };

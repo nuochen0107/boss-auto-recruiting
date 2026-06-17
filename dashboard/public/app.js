@@ -29,7 +29,8 @@ const ERROR_MAP = [
   [/run_already_active|run_lock_exists/, ["推荐页任务正在运行", "等待任务完成，或先暂停推荐页任务。"]],
   [/recommend_run_already_active/, ["推荐页任务占用中", "先暂停推荐页任务，再执行日常招聘流程。"]],
   [/legacy_boss_run_already_active|legacy_boss_run_active/, ["Boss 页面正在被其他任务使用", "等待当前任务结束，不要同时启动多个任务。"]],
-  [/missing_feishu_job_routes:([^\s]+)/, ["岗位路由缺少飞书 ID", "在岗位路由配置文件中填写对应岗位的 feishu_hire_job_id，然后重启控制面板。"]],
+  [/missing_feishu_job_routes?:([^\s]+)/, ["该岗位未配置飞书同步路由", "该岗位仍可执行 Boss 沟通和收简历；如需同步到飞书，请在岗位路由配置中填写 feishu_hire_job_id 后重启控制面板。"]],
+  [/no_feishu_job_routes_configured/, ["没有可同步的飞书岗位", "当前选择范围内没有配置 feishu_hire_job_id 的岗位。Boss 沟通和收简历仍可单独执行。"]],
   [/invalid_job_key/, ["岗位配置已变化", "刷新页面后重新选择岗位。"]],
   [/hire:application|99991672/, ["飞书应用缺少投递权限", "在飞书开放平台为当前应用开通 hire:application，并发布新版本。"]],
   [/school mismatch/i, ["候选人资料需要人工确认", "飞书中已有同一候选人，但学校信息不同。请人工核对后再处理。"]],
@@ -135,7 +136,7 @@ function renderJobs(result) {
     <div class="route-card ${job.feishu_configured ? "" : "missing"}">
       <strong>${escapeHtml(job.display_name)}</strong>
       <span>Boss 别名：${escapeHtml(job.boss_job_names.join(" / "))}</span>
-      <span>飞书路由：${job.feishu_configured ? escapeHtml(job.feishu_hire_job_id) : "待配置"}</span>
+      <span>飞书同步：${job.feishu_configured ? escapeHtml(job.feishu_hire_job_id) : "未配置，同步时跳过"}</span>
     </div>
   `).join("") || '<div class="route-card missing"><strong>没有启用的岗位</strong></div>';
 }

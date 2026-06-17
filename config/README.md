@@ -15,7 +15,7 @@
 - `job_key`：项目内部稳定标识，启用后不要随意修改。
 - `display_name`：Dashboard 展示名称。
 - `boss_job_names`：Boss 沟通列表可能出现的岗位名称或别名。
-- `feishu_hire_job_id`：对应的飞书招聘岗位 ID；沟通和收简历阶段允许留空，同步阶段必须填写。
+- `feishu_hire_job_id`：对应的飞书招聘岗位 ID；沟通和收简历阶段允许留空。留空岗位会参与 Boss 流程，但执行“全部岗位”飞书同步时会被跳过；只有明确同步该岗位时才必须填写。
 - `enabled`：是否参与识别和执行。
 
 macOS App 使用：
@@ -31,3 +31,4 @@ macOS App 使用：
 1. 沟通阶段按 `jobs.json` 中启用的岗位逐个切换 Boss 沟通页岗位筛选。
 2. 收简历阶段使用 Boss 全局姓名搜索，并用姓名和岗位共同确认会话。
 3. 下载后的简历保存到 `data/resumes/<job_key>/`。
+4. 飞书同步只处理已配置 `feishu_hire_job_id` 的岗位，未配置岗位的简历留在本地和队列中等待后续路由。

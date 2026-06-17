@@ -4,6 +4,7 @@
 
 应用内置：
 
+- Boss 招聘助手 App 图标
 - Node.js 运行时
 - PyMuPDF 简历解析器
 - 基于 macOS Vision 的中英文 OCR

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
+const require = createRequire(import.meta.url);
+const { enabledJobs, findJobByKey, loadJobsConfig } = require("../config/job-router.cjs");
 const dataRoot = path.resolve(process.env.BOSS_DATA_ROOT || path.join(projectRoot, "data"));
 const configRoot = process.env.BOSS_CONFIG_ROOT ? path.resolve(process.env.BOSS_CONFIG_ROOT) : "";
 const upstream = path.join(__dirname, "uploader/upload-resumes.mjs");
@@ -127,14 +130,42 @@ function isUnsignedInteger(value) {
   return typeof value === "string" && /^[0-9]+$/.test(value.trim());
 }
 
-function prepareManifest(filePath, resumeSourceId, jobKey) {
+function resolveJobRoute(baseEnv, jobKey) {
+  if (!jobKey) return null;
+  const jobsConfig = loadJobsConfig(projectRoot, baseEnv.BOSS_JOBS_FILE || "");
+  const job = findJobByKey(jobsConfig, jobKey);
+  if (!job?.enabled) throw new Error(`invalid_or_disabled_sync_job:${jobKey}`);
+  if (!isUnsignedInteger(job.feishu_hire_job_id)) {
+    throw new Error(`missing_feishu_job_route:${jobKey}`);
+  }
+  return job;
+}
+
+function configuredJobRoutes(baseEnv) {
+  const jobsConfig = loadJobsConfig(projectRoot, baseEnv.BOSS_JOBS_FILE || "");
+  return new Map(enabledJobs(jobsConfig)
+    .filter((job) => isUnsignedInteger(job.feishu_hire_job_id))
+    .map((job) => [job.job_key, job]));
+}
+
+function prepareManifest(filePath, resumeSourceId, jobKey, jobId = "", routeMap = null) {
   if (!filePath || !existsSync(filePath)) return filePath;
 
   const allRecords = parseManifestRecords(filePath).filter((record) => record && typeof record === "object");
   let records = jobKey
     ? allRecords.filter((record) => String(record.job_key || "").trim() === jobKey)
     : allRecords;
-  if (!records.length && !jobKey) return filePath;
+  if (!jobKey && routeMap) {
+    records = records.filter((record) => routeMap.has(String(record.job_key || "").trim()));
+  }
+  if (!records.length && !jobKey && !routeMap) return filePath;
+  if (!records.length && !jobKey && routeMap) {
+    records = [{
+      candidate_id: "__no_candidates_for_configured_jobs__",
+      boss_status: "not_eligible",
+      resume_source_id: isUnsignedInteger(resumeSourceId) ? resumeSourceId : "0",
+    }];
+  }
   if (!records.length) {
     records = [{
       candidate_id: `__no_candidates_for_job__:${jobKey}`,
@@ -147,6 +178,8 @@ function prepareManifest(filePath, resumeSourceId, jobKey) {
   let changed = records.length !== allRecords.length;
   const sanitized = records.map((record) => {
     const next = { ...record };
+    const routedJob = routeMap?.get(String(next.job_key || "").trim()) || null;
+    const targetJobId = jobId || routedJob?.feishu_hire_job_id || "";
     const current = String(next.resume_source_id || "").trim();
     if (!isUnsignedInteger(current)) {
       if (!isUnsignedInteger(resumeSourceId)) {
@@ -155,6 +188,10 @@ function prepareManifest(filePath, resumeSourceId, jobKey) {
         );
       }
       next.resume_source_id = resumeSourceId.trim();
+      changed = true;
+    }
+    if (targetJobId && next.job_id !== targetJobId) {
+      next.job_id = targetJobId;
       changed = true;
     }
     return next;
@@ -179,12 +216,22 @@ const baseEnv = {
 const manifestFile = baseEnv.FEISHU_HIRE_SYNC_MANIFEST || defaultManifestFile;
 const resumeSourceId = baseEnv.FEISHU_HIRE_RESUME_SOURCE_ID || "";
 const syncJobKey = baseEnv.BOSS_SYNC_JOB_KEY || "";
-const sanitizedManifestFile = prepareManifest(manifestFile, resumeSourceId, syncJobKey);
+const syncOnlyConfigured = baseEnv.BOSS_SYNC_ONLY_CONFIGURED === "1";
+const syncJob = resolveJobRoute(baseEnv, syncJobKey);
+const syncJobId = syncJob?.feishu_hire_job_id || "";
+const routeMap = syncOnlyConfigured && !syncJobKey ? configuredJobRoutes(baseEnv) : null;
+const sanitizedManifestFile = prepareManifest(manifestFile, resumeSourceId, syncJobKey, syncJobId, routeMap);
 const scopedResumeDir = syncJobKey ? path.join(defaultResumeDir, syncJobKey) : defaultResumeDir;
+if (syncJobKey) {
+  console.error(`INFO sync job route ${syncJobKey} -> Feishu Hire job ${syncJobId}`);
+} else if (routeMap) {
+  console.error(`INFO sync configured Feishu job routes: ${Array.from(routeMap.keys()).join(",") || "(none)"}`);
+}
 
 const env = {
   ...baseEnv,
   RESUME_DIR: baseEnv.FEISHU_HIRE_SYNC_RESUME_DIR || baseEnv.FEISHU_HIRE_RESUME_DIR || scopedResumeDir,
+  FEISHU_HIRE_JOB_ID: syncJobId || baseEnv.FEISHU_HIRE_JOB_ID || "",
   FEISHU_HIRE_UPLOAD_MODE: baseEnv.FEISHU_HIRE_UPLOAD_MODE || "talent_application",
   FEISHU_HIRE_CANDIDATE_MANIFEST: sanitizedManifestFile,
   FEISHU_HIRE_UPLOAD_STATE:
