@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { getCurrentRun, getTodayReport, pauseRun, preflight, startRun } from "../orchestrator/recommend_greet_runner.mjs";
 import { getLegacyRun, pauseLegacyRun, startLegacyRun } from "../orchestrator/legacy_pipeline_runner.mjs";
+import { createShutdownHandler } from "./app-shutdown.mjs";
 import { readJobsForEditor, writeJobsFromEditor } from "./job-config-editor.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +26,10 @@ const FEISHU_SYNC_STATES = [
   path.join(PROJECT_ROOT, "data/briefs/feishu-hire-sync-state.json"),
 ];
 let proxyProcess = null;
+const shutdownApp = createShutdownHandler({
+  getProxyProcess: () => proxyProcess,
+  setProxyProcess: (value) => { proxyProcess = value; },
+});
 
 function editableJobsFile() {
   return process.env.BOSS_JOBS_FILE
@@ -263,6 +268,10 @@ async function api(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/pipeline/pause") return sendJson(res, pauseLegacyRun());
   if (req.method === "POST" && url.pathname === "/api/resumes/cleanup-uploaded") {
     return sendJson(res, cleanupUploadedResumes());
+  }
+  if (req.method === "POST" && url.pathname === "/api/app/shutdown") {
+    const result = shutdownApp();
+    return sendJson(res, result, 202);
   }
   if (req.method === "GET" && url.pathname === "/api/pipeline/current") return sendJson(res, getLegacyRun());
   return sendJson(res, { error: "not_found" }, 404);

@@ -439,6 +439,20 @@ $("proxyBtn").addEventListener("click", async () => {
   }
 });
 
+$("shutdownBtn").addEventListener("click", async () => {
+  if (!window.confirm("确认退出 Boss 招聘助手？正在运行的面板服务会关闭，Chrome 和 Boss 页面不会被关闭。")) return;
+  try {
+    $("shutdownBtn").disabled = true;
+    await request("/api/app/shutdown", { method: "POST", body: "{}" });
+    showNotice("pipelineNotice", "Boss 招聘助手正在退出", "ok", "服务关闭后本页面将无法继续刷新；需要使用时重新打开 App。");
+    $("serviceBadge").textContent = "正在退出";
+    $("serviceBadge").className = "badge neutral";
+  } catch (error) {
+    $("shutdownBtn").disabled = false;
+    showError("pipelineNotice", error);
+  }
+});
+
 $("startBtn").addEventListener("click", async () => {
   const config = {
     jobId: $("jobId").value,
