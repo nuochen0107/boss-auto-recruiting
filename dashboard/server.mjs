@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { getCurrentRun, getTodayReport, pauseRun, preflight, startRun } from "../orchestrator/recommend_greet_runner.mjs";
 import { getLegacyRun, pauseLegacyRun, startLegacyRun } from "../orchestrator/legacy_pipeline_runner.mjs";
+import { readJobsForEditor, writeJobsFromEditor } from "./job-config-editor.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(DIR, "..");
@@ -24,6 +25,23 @@ const FEISHU_SYNC_STATES = [
   path.join(PROJECT_ROOT, "data/briefs/feishu-hire-sync-state.json"),
 ];
 let proxyProcess = null;
+
+function editableJobsFile() {
+  return process.env.BOSS_JOBS_FILE
+    ? path.resolve(process.env.BOSS_JOBS_FILE)
+    : path.join(PROJECT_ROOT, "config/jobs.json");
+}
+
+function publicJobsPayload(config) {
+  return {
+    version: config.version,
+    file: config.file,
+    jobs: enabledJobs(config).map((job) => ({
+      ...job,
+      feishu_configured: /^\d+$/.test(job.feishu_hire_job_id),
+    })),
+  };
+}
 
 function sendJson(res, value, status = 200) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -224,13 +242,16 @@ async function api(req, res, url) {
   }
   if (req.method === "GET" && url.pathname === "/api/jobs") {
     const config = loadJobsConfig(PROJECT_ROOT);
+    return sendJson(res, publicJobsPayload(config));
+  }
+  if (req.method === "GET" && url.pathname === "/api/jobs/config") {
+    return sendJson(res, readJobsForEditor(editableJobsFile()));
+  }
+  if (req.method === "POST" && url.pathname === "/api/jobs/config") {
+    const config = writeJobsFromEditor(editableJobsFile(), await body(req));
     return sendJson(res, {
-      version: config.version,
-      file: config.file,
-      jobs: enabledJobs(config).map((job) => ({
-        ...job,
-        feishu_configured: /^\d+$/.test(job.feishu_hire_job_id),
-      })),
+      ...config,
+      public: publicJobsPayload(config),
     });
   }
   if (req.method === "POST" && url.pathname === "/api/proxy/start") return sendJson(res, await startProxy(), 202);

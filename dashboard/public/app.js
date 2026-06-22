@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 let pollTimer = null;
 let pipelinePollTimer = null;
+let jobConfig = null;
 
 const STATUS_TEXT = {
   idle: "空闲",
@@ -146,6 +147,131 @@ async function loadJobs() {
     renderJobs(await request("/api/jobs"));
   } catch (error) {
     $("jobRoutes").innerHTML = `<div class="route-card missing"><strong>${escapeHtml(friendlyError(error).title)}</strong></div>`;
+  }
+}
+
+function normalizeJobKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function createJobDraft() {
+  return {
+    job_key: `job_${Date.now()}`,
+    display_name: "",
+    boss_job_names: [],
+    feishu_hire_job_id: "",
+    enabled: true,
+  };
+}
+
+function renderJobConfig(config) {
+  jobConfig = {
+    version: config.version || 1,
+    file: config.file || "",
+    jobs: (config.jobs || []).map((job) => ({
+      job_key: job.job_key || "",
+      display_name: job.display_name || "",
+      boss_job_names: Array.isArray(job.boss_job_names) ? job.boss_job_names : [],
+      feishu_hire_job_id: job.feishu_hire_job_id || "",
+      enabled: job.enabled !== false,
+    })),
+  };
+  $("jobConfigFile").textContent = jobConfig.file ? `配置文件：${jobConfig.file}` : "配置文件未返回";
+  $("jobConfigList").replaceChildren(...jobConfig.jobs.map((job, index) => jobEditorRow(job, index)));
+}
+
+function jobEditorRow(job, index) {
+  const row = document.createElement("div");
+  row.className = "job-editor";
+  row.dataset.index = String(index);
+  row.innerHTML = `
+    <label class="field">岗位标识
+      <input data-job-field="job_key" type="text" value="${escapeHtml(job.job_key)}" placeholder="product_operations">
+      <small>英文、数字、下划线；保存后不要随意修改</small>
+    </label>
+    <label class="field">岗位名称
+      <input data-job-field="display_name" type="text" value="${escapeHtml(job.display_name)}" placeholder="产品运营">
+      <small>Dashboard 展示名称</small>
+    </label>
+    <label class="field">Boss 岗位别名
+      <textarea data-job-field="boss_job_names" placeholder="每行一个 Boss 岗位名">${escapeHtml((job.boss_job_names || []).join("\n"))}</textarea>
+      <small>Boss 页面实际显示的岗位名，每行一个</small>
+    </label>
+    <label class="field">飞书岗位 ID
+      <input data-job-field="feishu_hire_job_id" type="text" value="${escapeHtml(job.feishu_hire_job_id)}" placeholder="可留空">
+      <small>留空时只参与 Boss 流程，同步飞书会跳过</small>
+    </label>
+    <div>
+      <label class="job-enabled">
+        <input data-job-field="enabled" type="checkbox" ${job.enabled ? "checked" : ""}>
+        启用
+      </label>
+      <button class="button danger-button job-remove-button" type="button" data-remove-job>停用</button>
+    </div>
+  `;
+  row.querySelector('[data-job-field="display_name"]').addEventListener("input", (event) => {
+    const keyInput = row.querySelector('[data-job-field="job_key"]');
+    if (!keyInput.value.trim() || /^job_\d+$/.test(keyInput.value.trim())) {
+      keyInput.value = normalizeJobKey(event.target.value) || keyInput.value;
+    }
+  });
+  row.querySelector("[data-remove-job]").addEventListener("click", () => {
+    row.querySelector('[data-job-field="enabled"]').checked = false;
+    row.classList.add("disabled");
+  });
+  return row;
+}
+
+async function loadJobConfig() {
+  try {
+    const config = await request("/api/jobs/config");
+    renderJobConfig(config);
+  } catch (error) {
+    showError("jobConfigNotice", error);
+  }
+}
+
+function collectJobConfig() {
+  const jobs = [...document.querySelectorAll(".job-editor")].map((row) => ({
+    job_key: normalizeJobKey(row.querySelector('[data-job-field="job_key"]').value),
+    display_name: row.querySelector('[data-job-field="display_name"]').value.trim(),
+    boss_job_names: row.querySelector('[data-job-field="boss_job_names"]').value
+      .split(/[\n,，]/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+    feishu_hire_job_id: row.querySelector('[data-job-field="feishu_hire_job_id"]').value.trim(),
+    enabled: row.querySelector('[data-job-field="enabled"]').checked,
+  }));
+  const seen = new Set();
+  for (const job of jobs) {
+    if (!job.job_key) throw new Error("岗位标识不能为空");
+    if (!job.display_name) throw new Error(`岗位名称不能为空：${job.job_key}`);
+    if (seen.has(job.job_key)) throw new Error(`岗位标识重复：${job.job_key}`);
+    seen.add(job.job_key);
+    if (job.feishu_hire_job_id && !/^\d+$/.test(job.feishu_hire_job_id)) {
+      throw new Error(`飞书岗位 ID 必须是纯数字：${job.display_name}`);
+    }
+  }
+  if (!jobs.some((job) => job.enabled)) throw new Error("至少需要启用一个岗位");
+  return { version: jobConfig?.version || 1, jobs };
+}
+
+async function saveJobConfig() {
+  try {
+    $("saveJobsBtn").disabled = true;
+    const payload = collectJobConfig();
+    const saved = await request("/api/jobs/config", { method: "POST", body: JSON.stringify(payload) });
+    renderJobConfig(saved);
+    renderJobs(saved.public || await request("/api/jobs"));
+    showNotice("jobConfigNotice", "岗位配置已保存", "ok", "岗位下拉框和路由卡片已刷新。");
+  } catch (error) {
+    showError("jobConfigNotice", error);
+  } finally {
+    $("saveJobsBtn").disabled = false;
   }
 }
 
@@ -418,5 +544,17 @@ $("cleanupUploadedResumesBtn").addEventListener("click", async () => {
 });
 
 $("pipelineStatusBtn").addEventListener("click", () => loadPipelineState());
+$("toggleJobConfigBtn").addEventListener("click", async () => {
+  const panel = $("jobConfigPanel");
+  panel.hidden = !panel.hidden;
+  $("toggleJobConfigBtn").textContent = panel.hidden ? "编辑岗位配置" : "收起岗位配置";
+  if (!panel.hidden && !jobConfig) await loadJobConfig();
+});
+$("addJobBtn").addEventListener("click", () => {
+  if (!jobConfig) jobConfig = { version: 1, jobs: [] };
+  jobConfig.jobs.push(createJobDraft());
+  renderJobConfig(jobConfig);
+});
+$("saveJobsBtn").addEventListener("click", saveJobConfig);
 
 await Promise.all([health(), loadJobs(), loadState(true), loadPipelineState(true)]);

@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Boss 招聘助手测试版",
+  "description": "通过本地 Dashboard 调用既有 Boss 招聘自动化链路。",
+  "version": "0.2.0",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "action": {
+    "default_title": "Boss 招聘助手",
+    "default_popup": "popup/popup.html"
+  },
+  "options_page": "options/options.html"
+}

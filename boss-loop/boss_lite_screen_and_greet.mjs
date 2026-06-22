@@ -541,17 +541,32 @@ async function closeBlockingDialogs(reason = 'cleanup') {
    ================================================================ */
 
 async function gotoRecommend() {
+  const targetUrl = 'https://www.zhipin.com/web/chat/recommend';
+  const current = JSON.parse((await evalTarget(`(() => JSON.stringify({ url: location.href }))()`)).value);
+  if (/\/web\/chat\/recommend/.test(current.url || '')) return { ok: true, url: current.url, alreadyThere: true };
+
+  try {
+    await httpJson(`${CFG.proxy}/navigate?target=${encodeURIComponent(targetId)}&url=${encodeURIComponent(targetUrl)}`, { timeout: 8000 });
+    await sleep(1800);
+    const checked = JSON.parse((await evalTarget(`(() => JSON.stringify({ url: location.href }))()`)).value);
+    if (/\/web\/chat\/recommend/.test(checked.url || '')) return { ok: true, url: checked.url, directNavigation: true };
+  } catch (error) {
+    appendLog({ action: 'goto_recommend_direct', result: 'failed', error: String(error.message || error).slice(0, 200) });
+  }
+
   const nav = JSON.parse((await evalTarget(`(() => {
-    const links = [...document.querySelectorAll('a,button,span,div')];
-    const a = links.find(x => (x.innerText || x.textContent || '').trim() === '推荐牛人');
+    const candidates = [
+      ...document.querySelectorAll('a[href*="/web/chat/recommend"], nav a, header a, aside a, [class*="nav"] a, [class*="menu"] a')
+    ];
+    const a = candidates.find(x => (x.innerText || x.textContent || '').trim() === '推荐牛人');
     if (!a) return JSON.stringify({ ok: false, url: location.href });
     a.setAttribute('data-lobster-nav', 'recommend');
     return JSON.stringify({ ok: true, url: location.href });
   })()`)).value);
-  if (nav.ok) {
-    await clickSelector('[data-lobster-nav="recommend"]');
-    await sleep(1800);
-  }
+  if (nav.ok) await clickSelector('[data-lobster-nav="recommend"]');
+  await sleep(1800);
+  const resolved = JSON.parse((await evalTarget(`(() => JSON.stringify({ url: location.href }))()`)).value);
+  return { ...nav, url: resolved.url, fallbackClick: nav.ok };
 }
 
 async function readRecommendCards() {
@@ -727,13 +742,12 @@ async function processRecommended() {
 
 async function gotoChat() {
   await closeBlockingDialogs('before_goto_chat');
-  const nav = JSON.parse((await evalTarget(`(() => {
-    const a = [...document.querySelectorAll('a,button,span,div')].find(x => /沟通/.test((x.innerText || x.textContent || '').trim()));
-    if (!a) return JSON.stringify({ ok: false });
-    a.setAttribute('data-lobster-nav', 'chat');
-    return JSON.stringify({ ok: true });
-  })()`)).value);
-  if (nav.ok) await clickSelector('[data-lobster-nav="chat"]');
+  const targetUrl = 'https://www.zhipin.com/web/chat/index';
+  try {
+    await httpJson(`${CFG.proxy}/navigate?target=${encodeURIComponent(targetId)}&url=${encodeURIComponent(targetUrl)}`, { timeout: 8000 });
+  } catch (error) {
+    appendLog({ action: 'goto_chat_direct', result: 'failed', error: String(error.message || error).slice(0, 200) });
+  }
   await sleep(1500);
   let checked = JSON.parse((await evalTarget(`(() => JSON.stringify({
     items: document.querySelectorAll('.geek-item[data-id],.geek-item').length,
@@ -742,7 +756,19 @@ async function gotoChat() {
     login: /请登录|扫码登录|登录后继续|账号登录/.test(document.body.innerText || '')
   }))()`)).value);
   if (!checked.items) {
-    await httpJson(`${CFG.proxy}/navigate?target=${encodeURIComponent(targetId)}&url=${encodeURIComponent('https://www.zhipin.com/web/chat/index')}`, { timeout: 8000 });
+    const nav = JSON.parse((await evalTarget(`(() => {
+      const candidates = [
+        ...document.querySelectorAll('a[href*="/web/chat/index"], a[href*="/web/chat"], nav a, header a, aside a, [class*="nav"] a, [class*="menu"] a')
+      ];
+      const a = candidates.find(x => /^(沟通|消息|聊天)$/.test((x.innerText || x.textContent || '').trim()));
+      if (!a) return JSON.stringify({ ok: false });
+      a.setAttribute('data-lobster-nav', 'chat');
+      return JSON.stringify({ ok: true });
+    })()`)).value);
+    if (nav.ok) {
+      await clickSelector('[data-lobster-nav="chat"]');
+      await sleep(1500);
+    }
     await closeBlockingDialogs('after_goto_chat_fallback');
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await sleep(1200);

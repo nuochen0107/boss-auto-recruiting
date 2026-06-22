@@ -1,0 +1,119 @@
+:root {
+  color-scheme: light;
+  --primary: #1677ff;
+  --text: #1f2329;
+  --muted: #646a73;
+  --border: #dfe3e8;
+  --bg: #f6f7f9;
+  --surface: #fff;
+  --danger: #d4380d;
+  --success: #16875a;
+  --warning: #b7791f;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 390px;
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+}
+
+.popup { padding: 14px; }
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+header strong { display: block; font-size: 15px; }
+header span { color: var(--muted); font-size: 11px; }
+
+button, input, select { font: inherit; }
+
+button {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+button.primary {
+  color: #fff;
+  border-color: var(--primary);
+  background: var(--primary);
+}
+
+button.danger {
+  color: #fff;
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: .62;
+}
+
+.status-box {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.status-box > div {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.status-box span, .field { color: var(--muted); font-size: 12px; }
+.status-box strong { display: block; margin-top: 2px; color: var(--text); font-size: 13px; }
+.status-box strong.ok { color: var(--success); }
+.status-box strong.warn { color: var(--warning); }
+.status-box strong.bad { color: var(--danger); }
+
+.field { display: block; margin-bottom: 10px; }
+
+select, input[type="number"] {
+  width: 100%;
+  height: 34px;
+  margin-top: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+pre {
+  max-height: 260px;
+  margin: 12px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: #d6deeb;
+  background: #1f2329;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

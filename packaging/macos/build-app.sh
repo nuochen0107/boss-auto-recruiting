@@ -149,7 +149,7 @@ done
 "$RUNTIME_DIR/bin/node" --check "$PROJECT_DIR/orchestrator/legacy_pipeline_runner.mjs"
 "$RUNTIME_DIR/bin/node" --check "$PROJECT_DIR/orchestrator/recommend_greet_runner.mjs"
 "$RUNTIME_DIR/bin/node" -e \
-  "const r=require(process.argv[1]); const c=r.loadJobsConfig(process.argv[2]); if (!r.enabledJobs(c).length) process.exit(1)" \
+  "const r=require(process.argv[1]); const c=r.loadJobsConfig(process.argv[2]); if (!Array.isArray(c.jobs)) process.exit(1)" \
   "$PROJECT_DIR/config/job-router.cjs" "$PROJECT_DIR"
 
 cat >"$CONTENTS_DIR/Info.plist" <<'PLIST'

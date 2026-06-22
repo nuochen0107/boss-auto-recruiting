@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Boss 招聘助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup">
+    <header>
+      <div>
+        <strong>Boss 招聘助手</strong>
+        <span id="serviceUrlLabel">127.0.0.1:8787</span>
+      </div>
+      <button id="optionsBtn" type="button" title="配置本地服务">配置</button>
+    </header>
+
+    <section class="status-box">
+      <div><span>本地服务</span><strong id="serviceStatus">检查中</strong></div>
+      <div><span>当前流程</span><strong id="pipelineStatus">读取中</strong></div>
+    </section>
+
+    <label class="field">岗位
+      <select id="jobKey"></select>
+    </label>
+
+    <div class="grid">
+      <label class="field">沟通上限
+        <input id="chatLimit" type="number" min="1" max="200" value="20">
+      </label>
+      <label class="field">收简历上限
+        <input id="collectLimit" type="number" min="1" max="200" value="20">
+      </label>
+    </div>
+
+    <div class="grid">
+      <label class="field">推荐上限
+        <input id="dailyTarget" type="number" min="1" max="200" value="20">
+      </label>
+      <label class="field">同步上限
+        <input id="syncLimit" type="number" min="1" max="50" value="3">
+      </label>
+    </div>
+
+    <label class="field">模式
+      <select id="mode">
+        <option value="dry-run">演练模式</option>
+        <option value="real-run">真实执行</option>
+      </select>
+    </label>
+
+    <div class="actions">
+      <button id="openDashboardBtn" type="button">打开面板</button>
+      <button id="preflightBtn" type="button">环境检查</button>
+      <button id="proxyBtn" type="button">启动连接</button>
+      <button id="refreshBtn" type="button">刷新状态</button>
+      <button id="recommendBtn" type="button" class="primary">推荐页打招呼</button>
+      <button id="chatBtn" type="button" class="primary" data-start>沟通页打招呼</button>
+      <button id="collectBtn" type="button" class="primary" data-start>收取简历</button>
+      <button id="frontBtn" type="button" class="primary" data-start>沟通并收简历</button>
+      <button id="syncBtn" type="button" data-start>同步飞书</button>
+      <button id="pauseBtn" type="button" class="danger">暂停流程</button>
+    </div>
+
+    <pre id="output">请先打开 Boss招聘助手.app，让本地控制面板保持运行。</pre>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

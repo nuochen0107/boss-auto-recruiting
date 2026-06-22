@@ -1,0 +1,53 @@
+body {
+  margin: 0;
+  color: #1f2329;
+  background: #f6f7f9;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+}
+
+main {
+  width: min(880px, calc(100% - 40px));
+  margin: 32px auto;
+}
+
+h1 { margin: 0 0 8px; font-size: 24px; }
+p { margin: 0 0 16px; color: #646a73; }
+
+label {
+  display: block;
+  color: #646a73;
+}
+
+input {
+  width: 100%;
+  height: 38px;
+  margin-top: 8px;
+  padding: 0 10px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+#saveBtn {
+  color: #fff;
+  border-color: #1677ff;
+  background: #1677ff;
+}
+
+#notice { margin-top: 12px; color: #1677ff; }

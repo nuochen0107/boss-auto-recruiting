@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Boss 招聘助手配置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>Boss 招聘助手配置</h1>
+    <p>插件只连接本机 Dashboard，不保存 Boss 或飞书密钥。</p>
+    <label>本地控制面板地址
+      <input id="serviceUrl" type="url" spellcheck="false" placeholder="http://127.0.0.1:8787">
+    </label>
+    <div class="actions">
+      <button id="resetBtn" type="button">恢复默认</button>
+      <button id="saveBtn" type="button">保存</button>
+    </div>
+    <div id="notice"></div>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
