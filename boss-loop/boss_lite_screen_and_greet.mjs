@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const require = createRequire(import.meta.url);
-const { enabledJobs, findJobByKey, loadJobsConfig, matchJobFromText, normalizeJobText } = require('../config/job-router.cjs');
+const { enabledJobs, findJobByKey, loadJobsConfig, matchJobFromText, normalizeJobText, safeJobAliases } = require('../config/job-router.cjs');
 const DATA_ROOT = path.resolve(process.env.BOSS_DATA_ROOT || path.resolve(__dirname, '../data'));
 const DEFAULT_CONFIG = path.resolve(process.env.BOSS_CONFIG_FILE || path.resolve(__dirname, '../assets/default-config.yaml'));
 
@@ -787,10 +787,10 @@ async function gotoChat() {
 async function selectChatJobFilter() {
   const job = CFG.selected_job;
   if (!job) throw new Error('paused_job_filter_required');
-  const aliases = job.boss_job_names;
+  const aliases = safeJobAliases(job);
   const normalizedAliases = aliases.map(value => normalizeJobText(value));
   const allJobAliases = enabledJobs(CFG.jobs_config)
-    .flatMap(item => item.boss_job_names)
+    .flatMap(item => safeJobAliases(item))
     .filter(Boolean);
   const normalizedAllJobAliases = allJobAliases.map(value => normalizeJobText(value));
   const probe = JSON.parse((await evalTarget(`(() => {
@@ -800,6 +800,21 @@ async function selectChatJobFilter() {
     const normalizedAllJobAliases = ${JSON.stringify(normalizedAllJobAliases)};
     const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
       .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const candidatesFor = value => {
+      const raw = String(value || '').normalize('NFKC').toLowerCase().trim();
+      const candidates = new Set();
+      const whole = normalize(raw);
+      if (whole) candidates.add(whole);
+      raw.split(/[_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
+        const normalized = normalize(part);
+        if (normalized) candidates.add(normalized);
+      });
+      return candidates;
+    };
+    const hasExactJobText = (text, normalizedList) => {
+      const candidates = candidatesFor(text);
+      return normalizedList.some(alias => alias && candidates.has(alias));
+    };
     const visible = el => {
       const r = el.getBoundingClientRect?.();
       const style = el.ownerDocument.defaultView?.getComputedStyle(el);
@@ -808,12 +823,10 @@ async function selectChatJobFilter() {
     };
     const textOf = el => (el.innerText || el.textContent || '').trim();
     const matchesJob = text => {
-      const normalized = normalize(text);
-      return normalizedAliases.some(alias => alias && normalized.includes(alias));
+      return hasExactJobText(text, normalizedAliases);
     };
     const matchesAnyConfiguredJob = text => {
-      const normalized = normalize(text);
-      return normalizedAllJobAliases.some(alias => alias && normalized.includes(alias));
+      return hasExactJobText(text, normalizedAllJobAliases);
     };
     const controlHint = el => [
       el.className?.baseVal || el.className || '',
@@ -908,6 +921,21 @@ async function selectChatJobFilter() {
     const normalizedAliases = ${JSON.stringify(normalizedAliases)};
     const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
       .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const candidatesFor = value => {
+      const raw = String(value || '').normalize('NFKC').toLowerCase().trim();
+      const candidates = new Set();
+      const whole = normalize(raw);
+      if (whole) candidates.add(whole);
+      raw.split(/[_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
+        const normalized = normalize(part);
+        if (normalized) candidates.add(normalized);
+      });
+      return candidates;
+    };
+    const hasExactJobText = text => {
+      const candidates = candidatesFor(text);
+      return normalizedAliases.some(alias => alias && candidates.has(alias));
+    };
     const visible = el => {
       const r = el.getBoundingClientRect?.();
       const style = el.ownerDocument.defaultView?.getComputedStyle(el);
@@ -920,8 +948,7 @@ async function selectChatJobFilter() {
       .map(el => ({ el, text: (el.innerText || el.textContent || '').trim(), rect: el.getBoundingClientRect() }))
       .filter(item => item.rect.width <= 600 && item.rect.height <= 120)
       .filter(item => {
-        const normalized = normalize(item.text);
-        return normalizedAliases.some(alias => alias && normalized.includes(alias));
+        return hasExactJobText(item.text);
       })
       .sort((a, b) => {
         const aLeaf = a.el.children.length ? 1 : 0;
@@ -946,6 +973,21 @@ async function selectChatJobFilter() {
     const normalizedAliases = ${JSON.stringify(normalizedAliases)};
     const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
       .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const candidatesFor = value => {
+      const raw = String(value || '').normalize('NFKC').toLowerCase().trim();
+      const candidates = new Set();
+      const whole = normalize(raw);
+      if (whole) candidates.add(whole);
+      raw.split(/[_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
+        const normalized = normalize(part);
+        if (normalized) candidates.add(normalized);
+      });
+      return candidates;
+    };
+    const hasExactJobText = text => {
+      const candidates = candidatesFor(text);
+      return normalizedAliases.some(alias => alias && candidates.has(alias));
+    };
     const visible = el => {
       const r = el.getBoundingClientRect?.();
       const style = el.ownerDocument.defaultView?.getComputedStyle(el);
@@ -959,8 +1001,7 @@ async function selectChatJobFilter() {
       .filter(item => item.rect.y >= 50 && item.rect.y < 280 && item.rect.x >= 120 && item.rect.x < 850)
       .filter(item => item.rect.width <= 600 && item.rect.height <= 120);
     const selected = controls.find(item => {
-      const normalized = normalize(item.text);
-      return normalizedAliases.some(alias => alias && normalized.includes(alias));
+      return hasExactJobText(item.text);
     });
     return JSON.stringify({
       ok: !!selected,

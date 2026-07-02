@@ -3,7 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { findJobByKey, loadJobsConfig, matchJobFromText } = require("../config/job-router.cjs");
+const { findJobByKey, loadJobsConfig, matchJobFromText, safeJobAliases } = require("../config/job-router.cjs");
 const {
   parseArgs,
   loadConfigOptions,
@@ -126,7 +126,7 @@ function getCollectTargets(candidates, options) {
       school: c.school || "",
       jobKey: job.job_key,
       jobName: job.display_name,
-      bossJobNames: job.boss_job_names,
+      bossJobNames: safeJobAliases(job),
       feishuJobId: job.feishu_hire_job_id || "",
       status: c.status,
       localResumePath: c.local_resume_path || null,
@@ -284,10 +284,21 @@ function searchThreadByName(cdp, target, options) {
     const jobNames = ${JSON.stringify(target.bossJobNames || [target.jobName].filter(Boolean))};
     const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
       .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const candidatesFor = value => {
+      const raw = String(value || '').normalize('NFKC').toLowerCase().trim();
+      const candidates = new Set();
+      const whole = normalize(raw);
+      if (whole) candidates.add(whole);
+      raw.split(/[_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
+        const normalized = normalize(part);
+        if (normalized) candidates.add(normalized);
+      });
+      return candidates;
+    };
     const normalizedJobs = jobNames.map(normalize).filter(Boolean);
     const matchesJob = text => {
-      const normalized = normalize(text);
-      return normalizedJobs.some(job => normalized.includes(job));
+      const candidates = candidatesFor(text);
+      return normalizedJobs.some(job => candidates.has(job));
     };
     const actionId = 'thread-result-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);
     document.querySelectorAll('[data-boss-auto-thread-result-id]').forEach(el => el.removeAttribute('data-boss-auto-thread-result-id'));
@@ -395,10 +406,21 @@ function threadIdentityStillMatches(cdp, target, requireJob = true) {
     const jobNames = ${JSON.stringify(target.bossJobNames || [target.jobName].filter(Boolean))};
     const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
       .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const candidatesFor = value => {
+      const raw = String(value || '').normalize('NFKC').toLowerCase().trim();
+      const candidates = new Set();
+      const whole = normalize(raw);
+      if (whole) candidates.add(whole);
+      raw.split(/[_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
+        const normalized = normalize(part);
+        if (normalized) candidates.add(normalized);
+      });
+      return candidates;
+    };
     const normalizedJobs = jobNames.map(normalize).filter(Boolean);
     const matchesJob = text => {
-      const normalized = normalize(text);
-      return normalizedJobs.some(job => normalized.includes(job));
+      const candidates = candidatesFor(text);
+      return normalizedJobs.some(job => candidates.has(job));
     };
     const visibleText = el => (el?.innerText || el?.textContent || '').trim();
     const visible = el => {

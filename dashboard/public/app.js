@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 let pollTimer = null;
 let pipelinePollTimer = null;
 let jobConfig = null;
+let messageConfig = null;
 
 const STATUS_TEXT = {
   idle: "空闲",
@@ -42,11 +43,13 @@ const ERROR_MAP = [
   [/paused_download_directory_unavailable/, ["无法设置简历下载目录", "检查浏览器连接服务和 Chrome 远程调试状态，然后重新执行收简历。"]],
   [/paused_consecutive_download_failures|download_button_not_found/, ["简历预览未加载出下载按钮", "保持 Boss 页面在前台，确认简历预览能够正常打开；系统会等待预览加载后再下载。"]],
   [/paused_no_sync_candidates/, ["没有可同步到飞书的简历", "先确认收简历任务显示 downloaded 和 queued 大于 0，再执行飞书同步。"]],
-  [/paused_job_filter_required|paused_job_filter_unavailable|paused_job_filter_trigger_not_found|paused_job_filter_option_not_found|paused_job_filter_verification_failed/, ["Boss 岗位筛选失败", "确认沟通页顶部可看到“全部职位”并能展开岗位列表，然后重试。"]],
+  [/paused_job_filter_option_not_found/, ["Boss 岗位名称未匹配", "请检查控制面板中的岗位名称是否与 Boss 已发布岗位名称一致，包括空格、大小写和岗位后缀。"]],
+  [/paused_job_filter_required|paused_job_filter_unavailable|paused_job_filter_trigger_not_found|paused_job_filter_verification_failed/, ["Boss 岗位筛选失败", "确认沟通页顶部可看到“全部职位”并能展开岗位列表，然后重试。"]],
   [/search_result_job_mismatch/, ["搜索到同名候选人但岗位不匹配", "系统已跳过该候选人，请在任务详情中核对姓名和岗位。"]],
   [/paused_captcha_detected/, ["Boss 出现验证码", "请在 Chrome 中人工完成验证码，再重新执行。"]],
   [/paused_platform_warning/, ["Boss 出现平台警告", "请先人工处理平台提示，确认安全后再继续。"]],
-  [/paused_recommend_job_selector_not_found|paused_recommend_job_option_not_found|paused_recommend_job_verification_failed/, ["推荐页岗位切换失败", "确认推荐牛人页中间偏右位置可以手动切换招聘职位，然后重新执行。"]],
+  [/paused_recommend_job_option_not_found/, ["推荐页岗位名称未匹配", "请检查控制面板中的岗位名称是否与 Boss 已发布岗位名称一致，包括空格、大小写和岗位后缀。"]],
+  [/paused_recommend_job_selector_not_found|paused_recommend_job_verification_failed/, ["推荐页岗位切换失败", "确认推荐牛人页中间偏右位置可以手动切换招聘职位，然后重新执行。"]],
   [/paused_recommend_prompt_not_closed|paused_post_greet_cleanup_failed/, ["推荐页弹窗未能关闭", "本次已发送的招呼已记录，系统会在发送下一条前暂停。请人工关闭弹窗后再重新执行。"]],
   [/ECONNREFUSED|3456.*没有服务/i, ["浏览器连接服务未启动", "点击页面下方“启动浏览器连接”，然后重新检查。"]],
   [/9222.*未监听|Chrome 未开启远程调试/i, ["Chrome 远程调试未开启", "打开 chrome://inspect/#remote-debugging，并开启 Allow remote debugging。"]],
@@ -136,7 +139,7 @@ function renderJobs(result) {
   $("jobRoutes").innerHTML = jobs.map((job) => `
     <div class="route-card ${job.feishu_configured ? "" : "missing"}">
       <strong>${escapeHtml(job.display_name)}</strong>
-      <span>Boss 别名：${escapeHtml(job.boss_job_names.join(" / "))}</span>
+      <span>Boss 岗位名称：${escapeHtml(job.display_name)}</span>
       <span>飞书同步：${job.feishu_configured ? escapeHtml(job.feishu_hire_job_id) : "未配置，同步时跳过"}</span>
     </div>
   `).join("") || '<div class="route-card missing"><strong>没有启用的岗位</strong></div>';
@@ -150,19 +153,9 @@ async function loadJobs() {
   }
 }
 
-function normalizeJobKey(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
 function createJobDraft() {
   return {
-    job_key: `job_${Date.now()}`,
     display_name: "",
-    boss_job_names: [],
     feishu_hire_job_id: "",
     enabled: true,
   };
@@ -173,9 +166,7 @@ function renderJobConfig(config) {
     version: config.version || 1,
     file: config.file || "",
     jobs: (config.jobs || []).map((job) => ({
-      job_key: job.job_key || "",
       display_name: job.display_name || "",
-      boss_job_names: Array.isArray(job.boss_job_names) ? job.boss_job_names : [],
       feishu_hire_job_id: job.feishu_hire_job_id || "",
       enabled: job.enabled !== false,
     })),
@@ -189,17 +180,9 @@ function jobEditorRow(job, index) {
   row.className = "job-editor";
   row.dataset.index = String(index);
   row.innerHTML = `
-    <label class="field">岗位标识
-      <input data-job-field="job_key" type="text" value="${escapeHtml(job.job_key)}" placeholder="product_operations">
-      <small>英文、数字、下划线；保存后不要随意修改</small>
-    </label>
     <label class="field">岗位名称
       <input data-job-field="display_name" type="text" value="${escapeHtml(job.display_name)}" placeholder="产品运营">
-      <small>Dashboard 展示名称</small>
-    </label>
-    <label class="field">Boss 岗位别名
-      <textarea data-job-field="boss_job_names" placeholder="每行一个 Boss 岗位名">${escapeHtml((job.boss_job_names || []).join("\n"))}</textarea>
-      <small>Boss 页面实际显示的岗位名，每行一个</small>
+      <small>必须和 Boss 页面岗位名称一致</small>
     </label>
     <label class="field">飞书岗位 ID
       <input data-job-field="feishu_hire_job_id" type="text" value="${escapeHtml(job.feishu_hire_job_id)}" placeholder="可留空">
@@ -213,12 +196,6 @@ function jobEditorRow(job, index) {
       <button class="button danger-button job-remove-button" type="button" data-remove-job>停用</button>
     </div>
   `;
-  row.querySelector('[data-job-field="display_name"]').addEventListener("input", (event) => {
-    const keyInput = row.querySelector('[data-job-field="job_key"]');
-    if (!keyInput.value.trim() || /^job_\d+$/.test(keyInput.value.trim())) {
-      keyInput.value = normalizeJobKey(event.target.value) || keyInput.value;
-    }
-  });
   row.querySelector("[data-remove-job]").addEventListener("click", () => {
     row.querySelector('[data-job-field="enabled"]').checked = false;
     row.classList.add("disabled");
@@ -237,21 +214,12 @@ async function loadJobConfig() {
 
 function collectJobConfig() {
   const jobs = [...document.querySelectorAll(".job-editor")].map((row) => ({
-    job_key: normalizeJobKey(row.querySelector('[data-job-field="job_key"]').value),
     display_name: row.querySelector('[data-job-field="display_name"]').value.trim(),
-    boss_job_names: row.querySelector('[data-job-field="boss_job_names"]').value
-      .split(/[\n,，]/)
-      .map((item) => item.trim())
-      .filter(Boolean),
     feishu_hire_job_id: row.querySelector('[data-job-field="feishu_hire_job_id"]').value.trim(),
     enabled: row.querySelector('[data-job-field="enabled"]').checked,
   }));
-  const seen = new Set();
   for (const job of jobs) {
-    if (!job.job_key) throw new Error("岗位标识不能为空");
-    if (!job.display_name) throw new Error(`岗位名称不能为空：${job.job_key}`);
-    if (seen.has(job.job_key)) throw new Error(`岗位标识重复：${job.job_key}`);
-    seen.add(job.job_key);
+    if (!job.display_name) throw new Error("岗位名称不能为空");
     if (job.feishu_hire_job_id && !/^\d+$/.test(job.feishu_hire_job_id)) {
       throw new Error(`飞书岗位 ID 必须是纯数字：${job.display_name}`);
     }
@@ -272,6 +240,50 @@ async function saveJobConfig() {
     showError("jobConfigNotice", error);
   } finally {
     $("saveJobsBtn").disabled = false;
+  }
+}
+
+function renderMessageConfig(config) {
+  messageConfig = {
+    file: config.file || "",
+    messages: config.messages || {},
+  };
+  $("messageConfigFile").textContent = messageConfig.file ? `配置文件：${messageConfig.file}` : "配置文件未返回";
+  $("requestResumeMessage").value = messageConfig.messages.request_resume_message || "";
+  $("confirmReceivedMessage").value = messageConfig.messages.confirm_received_message || "";
+}
+
+async function loadMessageConfig() {
+  try {
+    renderMessageConfig(await request("/api/messages/config"));
+  } catch (error) {
+    showError("messageConfigNotice", error);
+  }
+}
+
+function collectMessageConfig() {
+  const requestResumeMessage = $("requestResumeMessage").value.trim();
+  const confirmReceivedMessage = $("confirmReceivedMessage").value.trim();
+  if (!requestResumeMessage) throw new Error("索要简历话术不能为空");
+  if (!confirmReceivedMessage) throw new Error("收到简历确认话术不能为空");
+  return {
+    messages: {
+      request_resume_message: requestResumeMessage,
+      confirm_received_message: confirmReceivedMessage,
+    },
+  };
+}
+
+async function saveMessageConfig() {
+  try {
+    $("saveMessagesBtn").disabled = true;
+    const saved = await request("/api/messages/config", { method: "POST", body: JSON.stringify(collectMessageConfig()) });
+    renderMessageConfig(saved);
+    showNotice("messageConfigNotice", "话术配置已保存", "ok", "后续新任务会使用最新话术。");
+  } catch (error) {
+    showError("messageConfigNotice", error);
+  } finally {
+    $("saveMessagesBtn").disabled = false;
   }
 }
 
@@ -308,7 +320,7 @@ function renderPipeline(state) {
   manualReviewPanel.replaceChildren();
   for (const button of document.querySelectorAll(".pipeline-start")) button.disabled = isActive;
 
-  if (state.status === "failed" && state.error) showError("pipelineNotice", state.error);
+  if (["failed", "paused"].includes(state.status) && state.error) showError("pipelineNotice", state.error);
   else if (state.status === "completed_partial") {
     const partialStage = stages.find((stage) => stage.status === "completed_partial");
     const result = partialStage?.result || {};
@@ -570,5 +582,12 @@ $("addJobBtn").addEventListener("click", () => {
   renderJobConfig(jobConfig);
 });
 $("saveJobsBtn").addEventListener("click", saveJobConfig);
+$("toggleMessageConfigBtn").addEventListener("click", async () => {
+  const panel = $("messageConfigPanel");
+  panel.hidden = !panel.hidden;
+  $("toggleMessageConfigBtn").textContent = panel.hidden ? "编辑话术配置" : "收起话术配置";
+  if (!panel.hidden && !messageConfig) await loadMessageConfig();
+});
+$("saveMessagesBtn").addEventListener("click", saveMessageConfig);
 
-await Promise.all([health(), loadJobs(), loadState(true), loadPipelineState(true)]);
+await Promise.all([health(), loadJobs(), loadMessageConfig(), loadState(true), loadPipelineState(true)]);

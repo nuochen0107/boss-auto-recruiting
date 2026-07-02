@@ -14,6 +14,39 @@ function normalizeJobText(value) {
     .replace(/[\s·•・_\-—–（）()【】[\]]+/g, "");
 }
 
+function normalizedJobTextCandidates(value) {
+  const raw = String(value || "").normalize("NFKC").toLowerCase().trim();
+  const candidates = new Set();
+  const normalizedWhole = normalizeJobText(raw);
+  if (normalizedWhole) candidates.add(normalizedWhole);
+
+  for (const part of raw.split(/[_|｜\/／\\,，;；:：()（）【】[\]{}]+/u)) {
+    const normalizedPart = normalizeJobText(part);
+    if (normalizedPart) candidates.add(normalizedPart);
+  }
+
+  return candidates;
+}
+
+function safeJobAliases(job) {
+  const displayName = String(job?.display_name || "").trim();
+  const normalizedDisplayName = normalizeJobText(displayName);
+  const aliases = Array.isArray(job?.boss_job_names)
+    ? job.boss_job_names.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  const unique = Array.from(new Set([displayName, ...aliases].filter(Boolean)));
+  const normalized = unique.map((raw) => ({ raw, normalized: normalizeJobText(raw) }));
+  return normalized
+    .filter((item) => item.normalized)
+    .filter((item) => {
+      if (!normalizedDisplayName || item.normalized === normalizedDisplayName) return true;
+      if (item.normalized.includes(normalizedDisplayName)) return false;
+      if (normalizedDisplayName.includes(item.normalized)) return false;
+      return true;
+    })
+    .map((item) => item.raw);
+}
+
 function validateJob(job, index) {
   const jobKey = String(job?.job_key || "").trim();
   const displayName = String(job?.display_name || "").trim();
@@ -61,20 +94,25 @@ function findJobByKey(config, jobKey) {
 }
 
 function matchJobFromText(config, text) {
-  const normalizedText = normalizeJobText(text);
-  if (!normalizedText) return { status: "unknown", job: null, matches: [] };
+  const textCandidates = normalizedJobTextCandidates(text);
+  if (!textCandidates.size) return { status: "unknown", job: null, matches: [] };
   const matches = [];
   for (const job of enabledJobs(config)) {
-    const alias = job.boss_job_names
+    const alias = safeJobAliases(job)
       .map((value) => ({ raw: value, normalized: normalizeJobText(value) }))
-      .filter((value) => value.normalized && normalizedText.includes(value.normalized))
+      .filter((value) => value.normalized && textCandidates.has(value.normalized))
       .sort((a, b) => b.normalized.length - a.normalized.length)[0];
     if (alias) matches.push({ job, alias: alias.raw, length: alias.normalized.length });
   }
   matches.sort((a, b) => b.length - a.length);
   if (!matches.length) return { status: "unknown", job: null, matches: [] };
-  if (matches.length > 1 && matches[0].length === matches[1].length) {
-    return { status: "ambiguous", job: null, matches: matches.map((item) => item.job.job_key) };
+  if (matches.length > 1) {
+    return {
+      status: "ambiguous",
+      job: null,
+      matches: matches.map((item) => item.job.job_key),
+      message: "岗位匹配存在歧义，请检查岗位配置或 Boss 页面岗位名称。",
+    };
   }
   return {
     status: "matched",
@@ -91,4 +129,5 @@ module.exports = {
   loadJobsConfig,
   matchJobFromText,
   normalizeJobText,
+  safeJobAliases,
 };

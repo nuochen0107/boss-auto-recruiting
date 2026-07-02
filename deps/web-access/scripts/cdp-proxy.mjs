@@ -523,7 +523,22 @@ const server = http.createServer(async (req, res) => {
         expression: 'JSON.stringify({title: document.title, url: location.href, ready: document.readyState})',
         returnByValue: true,
       }, sid);
-      res.end(resp.result?.result?.value || '{}');
+      let pageInfo = {};
+      try {
+        pageInfo = JSON.parse(resp.result?.result?.value || '{}');
+      } catch {
+        pageInfo = {};
+      }
+      let targetInfo = null;
+      try {
+        const targetsResp = await sendCDP('Target.getTargets');
+        targetInfo = targetsResp.result?.targetInfos?.find(t => t.targetId === q.target) || null;
+      } catch { /* 元数据缺失不影响基本 info */ }
+      res.end(JSON.stringify({
+        ...pageInfo,
+        targetId: q.target,
+        browserContextId: targetInfo?.browserContextId || null,
+      }));
     }
 
     else {

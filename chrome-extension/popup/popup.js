@@ -1,30 +1,24 @@
+import {
+  DEFAULT_SERVICE_URL,
+  friendlyError,
+  isActiveStatus,
+  normalizeServiceUrl,
+  statusClass,
+  statusLabel,
+} from "../shared/plugin-ui.mjs";
+
 const $ = (id) => document.getElementById(id);
-const DEFAULT_SERVICE_URL = "http://127.0.0.1:8787";
-const STATUS_TEXT = {
-  idle: "空闲",
-  starting: "启动中",
-  running: "运行中",
-  waiting: "等待中",
-  pausing: "暂停中",
-  paused: "已暂停",
-  completed: "已完成",
-  completed_partial: "部分完成",
-  failed: "失败",
-  pending: "等待执行",
-};
 
 let serviceUrl = DEFAULT_SERVICE_URL;
 let pollTimer = null;
+let lastOutput = "请先打开 Boss招聘助手.app，让本地控制面板保持运行。";
+let currentRecommend = { status: "idle" };
+let currentPipeline = { status: "idle" };
 
 function render(value) {
-  $("output").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-}
-
-function normalizeServiceUrl(value) {
-  const raw = String(value || DEFAULT_SERVICE_URL).trim().replace(/\/+$/, "");
-  const url = new URL(raw);
-  if (url.protocol !== "http:") throw new Error("本地服务地址必须使用 http://");
-  return url.origin;
+  lastOutput = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  $("output").textContent = lastOutput;
+  $("emptyLog").hidden = Boolean(lastOutput.trim());
 }
 
 async function loadSettings() {
@@ -48,39 +42,51 @@ async function request(path, options = {}) {
   return value;
 }
 
-function friendlyError(error) {
-  const raw = String(error?.message || error || "未知错误");
-  if (/Failed to fetch|NetworkError|fetch/i.test(raw)) return "无法连接本地控制面板，请先打开 Boss招聘助手.app。";
-  if (/pipeline_already_active/.test(raw)) return "已有流程正在运行，请先暂停或等待完成。";
-  if (/run_already_active|run_lock_exists/.test(raw)) return "推荐页任务正在运行，请先暂停或等待完成。";
-  if (/missing_feishu_job_route|no_feishu_job_routes_configured/.test(raw)) return "当前岗位没有飞书路由，只能执行 Boss 沟通和收简历。";
-  return raw;
+function setStatus(id, status, fallback = "空闲") {
+  const el = $(id);
+  const cls = statusClass(status);
+  el.textContent = statusLabel(status || fallback);
+  el.className = ["status-value", cls].filter(Boolean).join(" ");
 }
 
 function setServiceStatus(text, cls = "") {
   $("serviceStatus").textContent = text;
-  $("serviceStatus").className = cls;
+  $("serviceStatus").className = ["status-value", cls].filter(Boolean).join(" ");
 }
 
-function statusClass(status) {
-  if (status === "completed") return "ok";
-  if (["starting", "running", "pausing", "completed_partial"].includes(status)) return "warn";
-  if (status === "failed") return "bad";
-  return "";
-}
+function updateButtonStates() {
+  const recommendActive = isActiveStatus(currentRecommend?.status);
+  const pipelineActive = isActiveStatus(currentPipeline?.status);
+  const anyActive = recommendActive || pipelineActive;
 
-function renderPipeline(state) {
-  const status = state?.status || "idle";
-  $("pipelineStatus").textContent = STATUS_TEXT[status] || status;
-  $("pipelineStatus").className = statusClass(status);
-  render(state || {});
-  const active = ["starting", "running", "pausing"].includes(status);
-  for (const button of document.querySelectorAll("[data-start]")) button.disabled = active;
-  if (active && !pollTimer) pollTimer = setInterval(refreshState, 1500);
-  if (!active && pollTimer) {
+  $("recommendBtn").disabled = anyActive;
+  for (const button of document.querySelectorAll("[data-start]")) button.disabled = anyActive;
+  $("pauseBtn").disabled = !anyActive;
+
+  if (anyActive && !pollTimer) pollTimer = setInterval(refreshState, 1500);
+  if (!anyActive && pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+}
+
+function renderRecommend(state) {
+  currentRecommend = state || { status: "idle" };
+  setStatus("recommendStatus", currentRecommend.status);
+  updateButtonStates();
+}
+
+function renderPipeline(state) {
+  currentPipeline = state || { status: "idle" };
+  setStatus("pipelineStatus", currentPipeline.status);
+  updateButtonStates();
+}
+
+function renderStateSummary() {
+  render({
+    recommend: currentRecommend,
+    pipeline: currentPipeline,
+  });
 }
 
 async function refreshJobs() {
@@ -94,15 +100,20 @@ async function refreshJobs() {
   return result;
 }
 
-async function refreshState() {
+async function refreshState({ showOutput = true } = {}) {
   try {
-    const state = await request("/api/pipeline/current");
-    renderPipeline(state);
+    const [recommend, pipeline] = await Promise.all([
+      request("/api/runs/current"),
+      request("/api/pipeline/current"),
+    ]);
+    renderRecommend(recommend);
+    renderPipeline(pipeline);
     setServiceStatus("已连接", "ok");
+    if (showOutput) renderStateSummary();
   } catch (error) {
     setServiceStatus("未连接", "bad");
-    $("pipelineStatus").textContent = "不可用";
-    $("pipelineStatus").className = "bad";
+    setStatus("recommendStatus", "failed");
+    setStatus("pipelineStatus", "failed");
     render(friendlyError(error));
   }
 }
@@ -140,9 +151,10 @@ async function startPipeline(type, label) {
       body: JSON.stringify(pipelinePayload(type)),
     });
     renderPipeline(state);
+    render(state);
   } catch (error) {
     render({ error: friendlyError(error), detail: error.payload || error.message });
-    await refreshState();
+    await refreshState({ showOutput: false });
   }
 }
 
@@ -164,37 +176,25 @@ async function startRecommend() {
         mode: $("mode").value,
       }),
     });
+    renderRecommend(state);
     render(state);
   } catch (error) {
     render({ error: friendlyError(error), detail: error.payload || error.message });
+    await refreshState({ showOutput: false });
   }
+}
+
+function openDashboard(path = "/") {
+  chrome.tabs.create({ url: `${serviceUrl}${path}` });
 }
 
 async function init() {
   await loadSettings();
   $("optionsBtn").addEventListener("click", () => chrome.runtime.openOptionsPage());
-  $("openDashboardBtn").addEventListener("click", () => chrome.tabs.create({ url: serviceUrl }));
-  $("refreshBtn").addEventListener("click", refreshState);
-  $("preflightBtn").addEventListener("click", async () => {
-    try {
-      render(await request("/api/preflight"));
-      setServiceStatus("已连接", "ok");
-    } catch (error) {
-      setServiceStatus("未连接", "bad");
-      render(friendlyError(error));
-    }
-  });
-  $("proxyBtn").addEventListener("click", async () => {
-    try {
-      render(await request("/api/proxy/start", { method: "POST", body: "{}" }));
-    } catch (error) {
-      render({ error: friendlyError(error), detail: error.payload || error.message });
-    }
-  });
+  $("openDashboardBtn").addEventListener("click", () => openDashboard("/"));
   $("recommendBtn").addEventListener("click", startRecommend);
   $("chatBtn").addEventListener("click", () => startPipeline("chat", "沟通页打招呼"));
   $("collectBtn").addEventListener("click", () => startPipeline("collect", "收取简历"));
-  $("frontBtn").addEventListener("click", () => startPipeline("front", "沟通并收简历"));
   $("syncBtn").addEventListener("click", () => startPipeline("sync", "同步飞书"));
   $("pauseBtn").addEventListener("click", async () => {
     try {
@@ -204,8 +204,10 @@ async function init() {
       ]);
       const pipelineValue = pipeline.status === "fulfilled" ? pipeline.value : { error: friendlyError(pipeline.reason) };
       const recommendValue = recommend.status === "fulfilled" ? recommend.value : { error: friendlyError(recommend.reason) };
-      render({ pipeline: pipelineValue, recommend: recommendValue });
       if (pipeline.status === "fulfilled") renderPipeline(pipeline.value.state || {});
+      if (recommend.status === "fulfilled") renderRecommend(recommend.value.state || {});
+      render({ pipeline: pipelineValue, recommend: recommendValue });
+      await refreshState({ showOutput: false });
     } catch (error) {
       render({ error: friendlyError(error), detail: error.payload || error.message });
     }
@@ -217,8 +219,8 @@ async function init() {
     await refreshState();
   } catch (error) {
     setServiceStatus("未连接", "bad");
-    $("pipelineStatus").textContent = "不可用";
-    $("pipelineStatus").className = "bad";
+    setStatus("recommendStatus", "failed");
+    setStatus("pipelineStatus", "failed");
     render(friendlyError(error));
   }
 }

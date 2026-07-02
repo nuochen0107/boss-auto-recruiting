@@ -9,7 +9,7 @@ import { buildBatchPlan, normalizeRunOptions } from "./quota_scheduler.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
-const { findJobByKey, loadJobsConfig } = require("../config/job-router.cjs");
+const { findJobByKey, loadJobsConfig, safeJobAliases } = require("../config/job-router.cjs");
 const DATA_DIR = path.resolve(process.env.BOSS_DATA_ROOT || path.join(ROOT, "data"));
 const RUN_DIR = path.join(DATA_DIR, "runs");
 const CANDIDATE_DIR = path.join(DATA_DIR, "candidates");
@@ -283,10 +283,21 @@ async function selectRecommendJob(targetId, options) {
     };
     const normalize = value => String(value || '').normalize('NFKC').toLowerCase()
       .replace(/[\\s·•・_\\-—–（）()【】\\[\\]]+/g, '');
+    const candidatesFor = value => {
+      const raw = String(value || '').normalize('NFKC').toLowerCase().trim();
+      const candidates = new Set();
+      const whole = normalize(raw);
+      if (whole) candidates.add(whole);
+      raw.split(/[_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
+        const normalized = normalize(part);
+        if (normalized) candidates.add(normalized);
+      });
+      return candidates;
+    };
     const desired = desiredAliases.map(normalize).filter(Boolean);
     const matchesDesired = text => {
-      const normalized = normalize(text);
-      return desired.some(value => value && normalized.includes(value));
+      const candidates = candidatesFor(text);
+      return desired.some(value => value && candidates.has(value));
     };
     const visible = el => {
       const rect = el.getBoundingClientRect?.();
@@ -771,6 +782,97 @@ function alreadyProcessedIds() {
     .map((item) => item.candidate_id));
 }
 
+const LEGACY_COLLECT_TERMINAL_STATUSES = new Set(["resume_downloaded", "ready_for_hire_sync", "boss_completed"]);
+
+export function recordLegacyCollectRequest({ candidate, legacyId, options, runId = "", timestamp = now() }) {
+  let state = readJson(OLD_STATE_FILE, { version: 1, candidates: {} });
+  if (Array.isArray(state)) {
+    state = {
+      version: 1,
+      candidates: Object.fromEntries(state.filter((item) => item?.candidate_id).map((item) => [item.candidate_id, item])),
+    };
+  }
+  if (!state.candidates || typeof state.candidates !== "object") state.candidates = {};
+
+  const candidateIdForCollect = legacyId || candidate.candidate_id;
+  const existing = state.candidates[candidateIdForCollect] || {};
+  if (LEGACY_COLLECT_TERMINAL_STATUSES.has(existing.status)) return existing;
+
+  const next = {
+    ...existing,
+    candidate_id: candidateIdForCollect,
+    recommend_candidate_id: candidate.candidate_id,
+    name: candidate.name,
+    school: candidate.school || "",
+    job_key: options.jobId,
+    job_name: options.jobName,
+    source: "recommended_feed",
+    raw_text: candidate.raw_text || existing.raw_text || "",
+    status: "attachment_requested",
+    decision: "direct_greet",
+    last_observation: "recommended_greet_sent_request_resume",
+    greeted_at: existing.greeted_at || timestamp,
+    message_sent_at: existing.message_sent_at || timestamp,
+    updated_at: timestamp,
+    history: [
+      ...(Array.isArray(existing.history) ? existing.history : []),
+      { at: timestamp, run_id: runId, action: "recommended_greet", result: "ok", to: "attachment_requested" },
+    ],
+  };
+
+  state.candidates[candidateIdForCollect] = next;
+  state.updated_at = timestamp;
+  state.config = { ...(state.config || {}), job_name: options.jobName };
+  fs.mkdirSync(path.dirname(OLD_STATE_FILE), { recursive: true });
+  writeJsonAtomic(OLD_STATE_FILE, state);
+  return next;
+}
+
+function decisionCandidateName(record) {
+  return String(record.candidate_name || record.name || "").trim();
+}
+
+function runOptionsById(date) {
+  const out = new Map();
+  for (const record of readJsonl(path.join(RUN_DIR, `run-${date}.jsonl`))) {
+    if (record.event === "run_start" && record.run_id && record.options) out.set(record.run_id, record.options);
+  }
+  return out;
+}
+
+export function backfillLegacyCollectRequestsFromDecisions({ date = dateKey(), options = null } = {}) {
+  const runOptions = runOptionsById(date);
+  const decisions = readJsonl(path.join(CANDIDATE_DIR, `candidate-decisions-${date}.jsonl`))
+    .filter((record) => record.flow_mode === "direct_greet" && record.action_taken === "greeted");
+  let backfilled = 0;
+  for (const record of decisions) {
+    const name = decisionCandidateName(record);
+    if (!name || !record.candidate_id) continue;
+    const runOption = runOptions.get(record.run_id) || {};
+    const jobId = record.job_id || runOption.jobId || options?.jobId || "unknown_job";
+    const jobName = record.job_name || runOption.jobName || options?.jobName || runOption.jobAliases?.[0] || options?.jobAliases?.[0] || jobId;
+    const before = readJson(OLD_STATE_FILE, { version: 1, candidates: {} });
+    const beforeCandidates = Array.isArray(before) ? before : before.candidates || {};
+    const beforeRecord = beforeCandidates[name];
+    recordLegacyCollectRequest({
+      candidate: {
+        candidate_id: record.candidate_id,
+        name,
+        school: record.candidate_school || "",
+        raw_text: record.raw_text || "",
+      },
+      legacyId: record.candidate_school ? `${name}__${record.candidate_school}` : name,
+      options: { jobId, jobName },
+      runId: record.run_id || "",
+      timestamp: record.timestamp || now(),
+    });
+    const after = readJson(OLD_STATE_FILE, { version: 1, candidates: {} });
+    const afterCandidates = Array.isArray(after) ? after : after.candidates || {};
+    if (!beforeRecord && afterCandidates[name]) backfilled += 1;
+  }
+  return { backfilled, checked: decisions.length };
+}
+
 function rememberDirectContact(candidate, legacyId) {
   appendJsonl(DIRECT_CONTACTED_FILE, {
     timestamp: now(),
@@ -932,6 +1034,12 @@ async function runBatch(targetId, batch) {
       activeTask.processed.add(id);
       if (useLegacyDedupe) activeTask.processed.add(legacyId);
       rememberDirectContact(candidate, legacyId);
+      recordLegacyCollectRequest({
+        candidate,
+        legacyId,
+        options,
+        runId: activeTask.state.run_id,
+      });
       increment({ greeted: 1 });
       batchPassed += 1;
       logDecision(candidate, "greeted");
@@ -1074,7 +1182,7 @@ export async function startRun(input = {}) {
     throw error;
   }
   options.jobName = job.display_name;
-  options.jobAliases = job.boss_job_names;
+  options.jobAliases = safeJobAliases(job);
   const preflightResult = await preflight();
   if (!preflightResult.ok) {
     const error = new Error(preflightResult.errors.join(";"));
@@ -1133,6 +1241,7 @@ export function getCurrentRun() {
 }
 
 export function getTodayReport() {
+  backfillLegacyCollectRequestsFromDecisions({ options: getCurrentRun().options || null });
   const decisions = readJsonl(candidateLogFile()).filter((item) => item.flow_mode === "direct_greet");
   const state = getCurrentRun();
   const runEvents = readJsonl(runLogFile()).filter((item) => item.run_id === state.run_id);

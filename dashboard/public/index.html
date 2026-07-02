@@ -199,7 +199,7 @@
           <div class="job-config-header">
             <div>
               <h3>岗位配置</h3>
-              <p>HR 可在这里新增岗位、维护 Boss 岗位别名和飞书招聘岗位 ID。</p>
+              <p>HR 可在这里新增岗位，并维护岗位名称和飞书招聘岗位 ID。</p>
             </div>
             <button id="toggleJobConfigBtn" class="button secondary" type="button">编辑岗位配置</button>
           </div>
@@ -213,6 +213,33 @@
             </div>
             <div id="jobConfigList" class="job-config-list"></div>
             <div id="jobConfigNotice" class="notice">修改岗位配置后保存，任务下拉框会自动刷新。</div>
+          </div>
+
+          <div class="job-config-header">
+            <div>
+              <h3>话术配置</h3>
+              <p>维护索要简历和收到简历后的自动回复内容。</p>
+            </div>
+            <button id="toggleMessageConfigBtn" class="button secondary" type="button">编辑话术配置</button>
+          </div>
+          <div id="messageConfigPanel" class="job-config-panel" hidden>
+            <div class="job-config-toolbar">
+              <span id="messageConfigFile" class="config-file">配置文件加载中</span>
+              <div class="actions">
+                <button id="saveMessagesBtn" class="button primary" type="button">保存话术</button>
+              </div>
+            </div>
+            <div class="message-config-list">
+              <label class="field">索要简历话术
+                <textarea id="requestResumeMessage" rows="4"></textarea>
+                <small>向候选人请求附件简历时发送</small>
+              </label>
+              <label class="field">收到简历确认话术
+                <textarea id="confirmReceivedMessage" rows="3"></textarea>
+                <small>简历下载后发送给候选人的确认消息</small>
+              </label>
+            </div>
+            <div id="messageConfigNotice" class="notice">修改话术后保存，后续新任务会使用最新内容。</div>
           </div>
 
           <div class="action-bar">

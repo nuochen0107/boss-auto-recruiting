@@ -10,6 +10,7 @@ import { getCurrentRun, getTodayReport, pauseRun, preflight, startRun } from "..
 import { getLegacyRun, pauseLegacyRun, startLegacyRun } from "../orchestrator/legacy_pipeline_runner.mjs";
 import { createShutdownHandler } from "./app-shutdown.mjs";
 import { readJobsForEditor, writeJobsFromEditor } from "./job-config-editor.mjs";
+import { readMessageConfig, writeMessageConfig } from "./message-config-editor.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(DIR, "..");
@@ -35,6 +36,12 @@ function editableJobsFile() {
   return process.env.BOSS_JOBS_FILE
     ? path.resolve(process.env.BOSS_JOBS_FILE)
     : path.join(PROJECT_ROOT, "config/jobs.json");
+}
+
+function editableMessageConfigFile() {
+  return process.env.BOSS_CONFIG_FILE
+    ? path.resolve(process.env.BOSS_CONFIG_FILE)
+    : path.join(PROJECT_ROOT, "packaging/macos/default-config.yaml");
 }
 
 function publicJobsPayload(config) {
@@ -258,6 +265,12 @@ async function api(req, res, url) {
       ...config,
       public: publicJobsPayload(config),
     });
+  }
+  if (req.method === "GET" && url.pathname === "/api/messages/config") {
+    return sendJson(res, readMessageConfig(editableMessageConfigFile()));
+  }
+  if (req.method === "POST" && url.pathname === "/api/messages/config") {
+    return sendJson(res, writeMessageConfig(editableMessageConfigFile(), await body(req)));
   }
   if (req.method === "POST" && url.pathname === "/api/proxy/start") return sendJson(res, await startProxy(), 202);
   if (req.method === "POST" && url.pathname === "/api/runs/start") return sendJson(res, await startRun(await body(req)), 202);

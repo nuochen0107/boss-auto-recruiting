@@ -14,20 +14,16 @@ function tempJobsFile() {
   return path.join(dir, "jobs.json");
 }
 
-test("normalizes editable jobs and preserves current job-router compatibility", () => {
+test("normalizes editable jobs with generated internal job keys", () => {
   const file = tempJobsFile();
   const payload = normalizeJobsPayload({
     version: 1,
     jobs: [{
-      job_key: "new_media_operations",
       display_name: "新媒体运营",
-      boss_job_names: "新媒体运营\n新媒体运营实习生",
       feishu_hire_job_id: "",
       enabled: true,
     }, {
-      job_key: "customer_manager",
       display_name: "客户经理",
-      boss_job_names: ["客户经理", "客户经理"],
       feishu_hire_job_id: "1234567890",
       enabled: false,
     }],
@@ -38,45 +34,47 @@ test("normalizes editable jobs and preserves current job-router compatibility", 
   const routed = loadJobsConfig(path.dirname(file), file);
 
   assert.equal(saved.jobs.length, 2);
-  assert.deepEqual(saved.jobs[0].boss_job_names, ["新媒体运营", "新媒体运营实习生"]);
+  assert.match(saved.jobs[0].job_key, /^job_[a-z0-9]+$/);
+  assert.notEqual(saved.jobs[0].job_key, saved.jobs[1].job_key);
+  assert.deepEqual(saved.jobs[0].boss_job_names, ["新媒体运营"]);
+  assert.deepEqual(saved.jobs[1].boss_job_names, ["客户经理"]);
   assert.equal(saved.jobs[1].enabled, false);
-  assert.equal(enabledJobs(routed).map((job) => job.job_key).join(","), "new_media_operations");
+  assert.equal(enabledJobs(routed).map((job) => job.job_key).join(","), saved.jobs[0].job_key);
 });
 
-test("rejects duplicate job keys", () => {
-  assert.throws(() => normalizeJobsPayload({
+test("regenerates one internal key per current job row", () => {
+  const saved = normalizeJobsPayload({
     jobs: [{
-      job_key: "ai_app_intern",
       display_name: "AI应用实习生",
-      boss_job_names: ["AI应用实习生"],
       enabled: true,
     }, {
-      job_key: "ai_app_intern",
-      display_name: "AI应用实习生 2",
-      boss_job_names: ["AI应用实习生 2"],
+      display_name: "产品运营",
+      enabled: true,
+    }, {
+      display_name: "产品运营经理",
       enabled: true,
     }],
-  }), /duplicate_job_key:ai_app_intern/);
+  });
+
+  assert.equal(saved.jobs.length, 3);
+  assert.equal(new Set(saved.jobs.map((job) => job.job_key)).size, 3);
+  assert.deepEqual(saved.jobs.map((job) => job.boss_job_names), [["AI应用实习生"], ["产品运营"], ["产品运营经理"]]);
 });
 
 test("rejects non-numeric feishu job ids", () => {
   assert.throws(() => normalizeJobsPayload({
     jobs: [{
-      job_key: "product_operations",
       display_name: "产品运营",
-      boss_job_names: ["产品运营"],
       feishu_hire_job_id: "abc123",
       enabled: true,
     }],
-  }), /invalid_feishu_job_id:product_operations/);
+  }), /invalid_feishu_job_id:/);
 });
 
 test("requires at least one enabled job", () => {
   assert.throws(() => normalizeJobsPayload({
     jobs: [{
-      job_key: "disabled_job",
       display_name: "停用岗位",
-      boss_job_names: ["停用岗位"],
       enabled: false,
     }],
   }), /no_enabled_jobs/);

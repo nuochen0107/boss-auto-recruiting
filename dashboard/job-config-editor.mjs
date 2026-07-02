@@ -5,19 +5,36 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { loadJobsConfig } = require("../config/job-router.cjs");
 
-function splitAliases(value) {
-  const values = Array.isArray(value)
-    ? value
-    : String(value || "").split(/[\n,，]/);
-  return values.map((item) => String(item || "").trim()).filter(Boolean);
-}
-
 function normalizeJobKey(value) {
   return String(value || "")
+    .normalize("NFKC")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+function hashJobName(value) {
+  let hash = 2166136261;
+  for (const char of String(value || "")) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function jobKeyFromDisplayName(displayName, usedKeys) {
+  const slug = normalizeJobKey(displayName);
+  const hash = hashJobName(displayName);
+  const base = slug ? `${slug}_${hash}` : `job_${hash}`;
+  let key = base;
+  let suffix = 2;
+  while (usedKeys.has(key)) {
+    key = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  usedKeys.add(key);
+  return key;
 }
 
 export function normalizeJobsPayload(payload = {}) {
@@ -27,21 +44,16 @@ export function normalizeJobsPayload(payload = {}) {
     throw error;
   }
 
+  const usedKeys = new Set();
   const jobs = payload.jobs.map((item, index) => {
     const displayName = String(item?.display_name || "").trim();
-    const jobKey = normalizeJobKey(item?.job_key);
-    if (!jobKey) {
-      const error = new Error(`missing_job_key_at_index_${index}`);
-      error.statusCode = 422;
-      throw error;
-    }
     if (!displayName) {
-      const error = new Error(`missing_job_display_name:${jobKey}`);
+      const error = new Error(`missing_job_display_name_at_index_${index}`);
       error.statusCode = 422;
       throw error;
     }
 
-    const aliases = Array.from(new Set([displayName, ...splitAliases(item?.boss_job_names)]));
+    const jobKey = jobKeyFromDisplayName(displayName, usedKeys);
     const feishuJobId = String(item?.feishu_hire_job_id || "").trim();
     if (feishuJobId && !/^\d+$/.test(feishuJobId)) {
       const error = new Error(`invalid_feishu_job_id:${jobKey}`);
@@ -51,21 +63,12 @@ export function normalizeJobsPayload(payload = {}) {
     return {
       job_key: jobKey,
       display_name: displayName,
-      boss_job_names: aliases,
+      boss_job_names: [displayName],
       feishu_hire_job_id: feishuJobId,
       enabled: item?.enabled !== false,
     };
   });
 
-  const keys = new Set();
-  for (const job of jobs) {
-    if (keys.has(job.job_key)) {
-      const error = new Error(`duplicate_job_key:${job.job_key}`);
-      error.statusCode = 422;
-      throw error;
-    }
-    keys.add(job.job_key);
-  }
   if (!jobs.some((job) => job.enabled)) {
     const error = new Error("no_enabled_jobs");
     error.statusCode = 422;

@@ -8,62 +8,88 @@
 </head>
 <body>
   <main class="popup">
-    <header>
+    <header class="app-header">
       <div>
-        <strong>Boss 招聘助手</strong>
-        <span id="serviceUrlLabel">127.0.0.1:8787</span>
+        <strong class="app-title">Boss 招聘助手</strong>
+        <span class="service-url" id="serviceUrlLabel">127.0.0.1:8787</span>
       </div>
-      <button id="optionsBtn" type="button" title="配置本地服务">配置</button>
+      <button id="optionsBtn" type="button" class="ghost" title="配置本地服务">配置</button>
     </header>
 
-    <section class="status-box">
-      <div><span>本地服务</span><strong id="serviceStatus">检查中</strong></div>
-      <div><span>当前流程</span><strong id="pipelineStatus">读取中</strong></div>
+    <section class="status-section" aria-labelledby="statusTitle">
+      <h2 id="statusTitle">运行状态</h2>
+      <div class="status-box" aria-live="polite">
+        <div class="status-item" role="status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="status-label">本地服务</span>
+          <strong class="status-value" id="serviceStatus">检查中</strong>
+        </div>
+        <div class="status-item" role="status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="status-label">推荐任务</span>
+          <strong class="status-value" id="recommendStatus">读取中</strong>
+        </div>
+        <div class="status-item" role="status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="status-label">日常流程</span>
+          <strong class="status-value" id="pipelineStatus">读取中</strong>
+        </div>
+      </div>
     </section>
 
-    <label class="field">岗位
-      <select id="jobKey"></select>
-    </label>
+    <section class="config-section" aria-labelledby="configTitle">
+      <h2 id="configTitle">执行配置</h2>
+      <div class="config-grid">
+        <label class="field">岗位
+          <select id="jobKey"></select>
+        </label>
 
-    <div class="grid">
-      <label class="field">沟通上限
-        <input id="chatLimit" type="number" min="1" max="200" value="20">
-      </label>
-      <label class="field">收简历上限
-        <input id="collectLimit" type="number" min="1" max="200" value="20">
-      </label>
-    </div>
+        <label class="field">模式
+          <select id="mode">
+            <option value="dry-run">演练模式</option>
+            <option value="real-run">真实执行</option>
+          </select>
+        </label>
+      </div>
+    </section>
 
-    <div class="grid">
-      <label class="field">推荐上限
-        <input id="dailyTarget" type="number" min="1" max="200" value="20">
-      </label>
-      <label class="field">同步上限
-        <input id="syncLimit" type="number" min="1" max="50" value="3">
-      </label>
-    </div>
+    <section class="task-section" aria-labelledby="taskTitle">
+      <h2 id="taskTitle">任务执行</h2>
+      <div class="task-actions">
+        <label class="inline-field">沟通人数
+          <input id="chatLimit" type="number" min="1" max="200" value="20">
+        </label>
+        <button id="chatBtn" type="button" class="primary" data-start>沟通页打招呼</button>
 
-    <label class="field">模式
-      <select id="mode">
-        <option value="dry-run">演练模式</option>
-        <option value="real-run">真实执行</option>
-      </select>
-    </label>
+        <label class="inline-field">收简历数量
+          <input id="collectLimit" type="number" min="1" max="200" value="20">
+        </label>
+        <button id="collectBtn" type="button" class="primary" data-start>收取简历</button>
 
-    <div class="actions">
-      <button id="openDashboardBtn" type="button">打开面板</button>
-      <button id="preflightBtn" type="button">环境检查</button>
-      <button id="proxyBtn" type="button">启动连接</button>
-      <button id="refreshBtn" type="button">刷新状态</button>
-      <button id="recommendBtn" type="button" class="primary">推荐页打招呼</button>
-      <button id="chatBtn" type="button" class="primary" data-start>沟通页打招呼</button>
-      <button id="collectBtn" type="button" class="primary" data-start>收取简历</button>
-      <button id="frontBtn" type="button" class="primary" data-start>沟通并收简历</button>
-      <button id="syncBtn" type="button" data-start>同步飞书</button>
-      <button id="pauseBtn" type="button" class="danger">暂停流程</button>
-    </div>
+        <label class="inline-field">同步上限
+          <input id="syncLimit" type="number" min="1" max="50" value="3">
+        </label>
+        <button id="syncBtn" type="button" class="primary" data-start>同步飞书</button>
 
-    <pre id="output">请先打开 Boss招聘助手.app，让本地控制面板保持运行。</pre>
+        <label class="inline-field">推荐人数
+          <input id="dailyTarget" type="number" min="1" max="200" value="20">
+        </label>
+        <button id="recommendBtn" type="button" class="primary">推荐页打招呼</button>
+      </div>
+    </section>
+
+    <section class="support-section" aria-label="辅助操作">
+      <div class="utility-actions">
+        <button id="openDashboardBtn" type="button" class="secondary">打开面板</button>
+        <button id="pauseBtn" type="button" class="danger">暂停流程</button>
+      </div>
+    </section>
+
+    <details class="output-panel log-section">
+      <summary>运行日志</summary>
+      <p class="empty-log" id="emptyLog">暂无运行日志</p>
+      <pre id="output"></pre>
+    </details>
   </main>
   <script type="module" src="popup.js"></script>
 </body>
