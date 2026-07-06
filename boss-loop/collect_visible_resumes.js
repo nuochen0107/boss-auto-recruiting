@@ -289,7 +289,7 @@ function searchThreadByName(cdp, target, options) {
       const candidates = new Set();
       const whole = normalize(raw);
       if (whole) candidates.add(whole);
-      raw.split(/[_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
+      raw.split(/[\\r\\n\\t_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
         const normalized = normalize(part);
         if (normalized) candidates.add(normalized);
       });
@@ -411,7 +411,7 @@ function threadIdentityStillMatches(cdp, target, requireJob = true) {
       const candidates = new Set();
       const whole = normalize(raw);
       if (whole) candidates.add(whole);
-      raw.split(/[_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
+      raw.split(/[\\r\\n\\t_|｜\\/／\\\\,，;；:：()（）【】\\[\\]{}]+/u).forEach(part => {
         const normalized = normalize(part);
         if (normalized) candidates.add(normalized);
       });

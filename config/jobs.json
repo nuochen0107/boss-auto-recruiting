@@ -1,4 +1,23 @@
 {
   "version": 1,
-  "jobs": []
+  "jobs": [
+    {
+      "job_key": "job_1a8clsu",
+      "display_name": "产品运营",
+      "boss_job_names": [
+        "产品运营"
+      ],
+      "feishu_hire_job_id": "7650075595683186987",
+      "enabled": true
+    },
+    {
+      "job_key": "ai_hxhlao",
+      "display_name": "AI 应用实习生",
+      "boss_job_names": [
+        "AI 应用实习生"
+      ],
+      "feishu_hire_job_id": "7631918421475477802",
+      "enabled": true
+    }
+  ]
 }

@@ -30,3 +30,13 @@ test("chat navigation uses fixed URL before fallback clicks", () => {
   assert.ok(click > -1, "gotoChat keeps a click fallback");
   assert.ok(navigate < click, "fixed URL navigation happens before fallback click");
 });
+
+test("profile filter reads only the top candidate profile text", () => {
+  const body = functionBody("processInbound");
+
+  assert.match(source, /profileText:/);
+  assert.match(source, /base-info-single-top-detail/);
+  assert.match(source, /base-info-single-detial/);
+  assert.match(body, /parseCandidateProfile\(opened\.detail\.profileText \|\| ''\)/);
+  assert.doesNotMatch(body, /parseCandidateProfile\(opened\.detail\.rightText \|\| ''\)/);
+});

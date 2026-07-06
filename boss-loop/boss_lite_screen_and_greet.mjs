@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { normalizeProfileFilter, parseCandidateProfile, profileFilterDecision } from './profile-filter.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -55,6 +56,11 @@ function loadConfig() {
   const selectedJob = selectedJobKey ? findJobByKey(jobsConfig, selectedJobKey) : null;
   if (selectedJobKey && !selectedJob?.enabled) throw new Error(`invalid_job_key:${selectedJobKey}`);
   const fallbackJob = selectedJob || enabledJobs(jobsConfig)[0] || null;
+  const profileFilter = normalizeProfileFilter({
+    minAge: args['min-age'] || readYamlScalar(configFile, 'min_age'),
+    maxAge: args['max-age'] || readYamlScalar(configFile, 'max_age'),
+    minEducation: args['min-education'] || readYamlScalar(configFile, 'min_education'),
+  });
 
   const cfg = {
     job_name: args['job-name'] || readYamlScalar(configFile, 'job_name') || fallbackJob?.display_name || '',
@@ -98,6 +104,10 @@ function loadConfig() {
     card_prefilter_enabled: readYamlScalar(configFile, 'card_prefilter_enabled') !== 'false',
     thread_fast_switch_enabled: readYamlScalar(configFile, 'thread_fast_switch_enabled') !== 'false',
     aggressive_prefilter_enabled: readYamlScalar(configFile, 'aggressive_prefilter_enabled') === 'true',
+    min_age: profileFilter.minAge,
+    max_age: profileFilter.maxAge,
+    min_education: profileFilter.minEducation,
+    profile_filter: profileFilter,
     stop_on_captcha: readYamlScalar(configFile, 'stop_on_captcha') !== 'false',
     stop_on_login_error: readYamlScalar(configFile, 'stop_on_login_error') !== 'false',
     dryRun: !!args['dry-run'],
@@ -1220,7 +1230,44 @@ async function openChatAndReadDetail(item) {
     const input = !!document.querySelector('.chat-container-private [contenteditable], [contenteditable]');
     const selected = [...document.querySelectorAll('.geek-item.selected,.geek-item.active,.geek-item.cur')].map(e => e.innerText).join('\\n');
     const rightPanel = document.querySelector('.chat-container-private');
-    const rightText = (rightPanel?.innerText || text).slice(0, 3500);
+    const conv = document.querySelector('.chat-conversation, [class*="conversation"]');
+    const visible = el => {
+      const rect = el.getBoundingClientRect?.();
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      return rect && rect.width > 0 && rect.height > 0 &&
+        style?.display !== 'none' && style?.visibility !== 'hidden';
+    };
+    const profileHeaderSelectors = [
+      '.base-info-single-top-detail',
+      '.base-info-single-detial',
+      '.base-info-single-top',
+      '.base-info-single-container'
+    ].join(',');
+    const profileHeader = [...document.querySelectorAll(profileHeaderSelectors)]
+      .filter(visible)
+      .map(el => {
+        const rect = el.getBoundingClientRect();
+        return {
+          text: (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' '),
+          x: rect.x,
+          y: rect.y,
+          area: rect.width * rect.height
+        };
+      })
+      .filter(item =>
+        item.text.length >= 4 &&
+        item.text.length <= 260 &&
+        item.text.includes(name) &&
+        /\\d{1,2}\\s*岁/.test(item.text) &&
+        /博士|硕士|研究生|本科|大专|专科/.test(item.text)
+      )
+      .sort((a, b) => a.y - b.y || a.area - b.area)[0] || null;
+    const profileText = profileHeader?.text || '';
+    const rightPanelText = rightPanel?.innerText || '';
+    const rightText = [rightPanelText, selected]
+      .filter(Boolean)
+      .join('\\n')
+      .slice(0, 5000);
 
     // Try to extract school from education section
     let school = '';
@@ -1239,13 +1286,6 @@ async function openChatAndReadDetail(item) {
 
     // Classify the latest turn. An attachment followed by "请查收" is still
     // an incoming resume as long as both messages arrived after our last reply.
-    const conv = document.querySelector('.chat-conversation, [class*="conversation"]');
-    const visible = el => {
-      const rect = el.getBoundingClientRect?.();
-      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
-      return rect && rect.width > 0 && rect.height > 0 &&
-        style?.display !== 'none' && style?.visibility !== 'hidden';
-    };
     const explicitRows = conv ? [...conv.querySelectorAll(
       '.item-myself,.item-friend,.chat-message,.message-row,.message-item,[class*="message-item"],[class*="message-row"]'
     )].filter(visible) : [];
@@ -1318,6 +1358,7 @@ async function openChatAndReadDetail(item) {
     return JSON.stringify({
       input,
       selected: selected.slice(0, 300),
+      profileText: profileText.slice(0, 300),
       rightText: rightText.slice(0, 1200),
       identity,
       school,
@@ -1820,6 +1861,44 @@ async function processInbound() {
 
       const schoolFromDetail = opened.detail.school || '';
       const stableId = id;
+      const candidateProfile = parseCandidateProfile(opened.detail.profileText || '');
+      const filterDecision = profileFilterDecision(candidateProfile, CFG.profile_filter);
+      if (!filterDecision.passed) {
+        counters.skipped++;
+        putCandidate({
+          ...baseCandidate,
+          candidate_id: stableId,
+          application_id: stableId,
+          school: schoolFromDetail,
+          age: candidateProfile.age,
+          education: candidateProfile.education,
+          education_level: candidateProfile.educationLevel,
+          decision: 'skip',
+          skip_reason: filterDecision.reason,
+          last_observation: 'profile_filtered',
+          history_event: {
+            action: 'screen_inbound',
+            result: 'skip',
+            error_code: filterDecision.reason
+          }
+        });
+        appendLog({
+          candidate_id: stableId,
+          boss_id: bossId,
+          source: 'inbound_chat',
+          action: 'screen_inbound',
+          result: 'skip',
+          error_code: filterDecision.reason,
+          age: candidateProfile.age,
+          education: candidateProfile.education,
+          education_level: candidateProfile.educationLevel,
+          profile_text_found: Boolean(opened.detail.profileText),
+          min_age: CFG.min_age,
+          max_age: CFG.max_age,
+          min_education: CFG.min_education,
+        });
+        continue;
+      }
 
       const score = directContactDecision();
       scored.push({ item, id: stableId, score, detail: opened.detail });

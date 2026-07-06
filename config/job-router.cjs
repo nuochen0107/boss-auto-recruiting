@@ -20,7 +20,7 @@ function normalizedJobTextCandidates(value) {
   const normalizedWhole = normalizeJobText(raw);
   if (normalizedWhole) candidates.add(normalizedWhole);
 
-  for (const part of raw.split(/[_|｜\/／\\,，;；:：()（）【】[\]{}]+/u)) {
+  for (const part of raw.split(/[\r\n\t_|｜\/／\\,，;；:：()（）【】[\]{}]+/u)) {
     const normalizedPart = normalizeJobText(part);
     if (normalizedPart) candidates.add(normalizedPart);
   }

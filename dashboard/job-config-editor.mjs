@@ -37,6 +37,22 @@ function jobKeyFromDisplayName(displayName, usedKeys) {
   return key;
 }
 
+export function extractFeishuHireJobId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d+$/.test(raw)) return raw;
+  try {
+    const parsed = new URL(raw);
+    const jobId = parsed.searchParams.get("job_id");
+    if (jobId && /^\d+$/.test(jobId)) return jobId;
+    const pathMatch = parsed.pathname.match(/\/hire\/job\/(\d+)(?:\/|$)/);
+    if (pathMatch) return pathMatch[1];
+  } catch { /* fall through to regex fallback */ }
+  const match = raw.match(/[?&]job_id=(\d+)(?:&|$)|\/hire\/job\/(\d+)(?:[/?#]|$)/);
+  if (match) return match[1] || match[2];
+  return raw;
+}
+
 export function normalizeJobsPayload(payload = {}) {
   if (!Array.isArray(payload.jobs)) {
     const error = new Error("invalid_jobs_payload");
@@ -54,7 +70,7 @@ export function normalizeJobsPayload(payload = {}) {
     }
 
     const jobKey = jobKeyFromDisplayName(displayName, usedKeys);
-    const feishuJobId = String(item?.feishu_hire_job_id || "").trim();
+    const feishuJobId = extractFeishuHireJobId(item?.feishu_hire_job_id);
     if (feishuJobId && !/^\d+$/.test(feishuJobId)) {
       const error = new Error(`invalid_feishu_job_id:${jobKey}`);
       error.statusCode = 422;

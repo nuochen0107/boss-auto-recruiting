@@ -71,6 +71,40 @@ test("rejects non-numeric feishu job ids", () => {
   }), /invalid_feishu_job_id:/);
 });
 
+test("extracts Feishu hire job id from pasted application URL", () => {
+  const saved = normalizeJobsPayload({
+    jobs: [{
+      display_name: "产品运营",
+      feishu_hire_job_id: "https://webeye.feishu.cn/hire/application/list?folder_id=&jobCategoryValue=%7B%22value%22%3A%22all%22%7D&job_id=7650075595683186987&job_process_id=6802551707094468872",
+      enabled: true,
+    }],
+  });
+
+  assert.equal(saved.jobs[0].feishu_hire_job_id, "7650075595683186987");
+});
+
+test("extracts Feishu hire job id from pasted job detail URL", () => {
+  const saved = normalizeJobsPayload({
+    jobs: [{
+      display_name: "产品运营",
+      feishu_hire_job_id: "https://webeye.feishu.cn/hire/job/7650075595683186987?activeTab=basicInfo",
+      enabled: true,
+    }],
+  });
+
+  assert.equal(saved.jobs[0].feishu_hire_job_id, "7650075595683186987");
+});
+
+test("does not treat other Feishu URL ids as hire job id", () => {
+  assert.throws(() => normalizeJobsPayload({
+    jobs: [{
+      display_name: "产品运营",
+      feishu_hire_job_id: "https://webeye.feishu.cn/hire/application/list?job_process_id=6802551707094468872&stage_id=6802551707094370568",
+      enabled: true,
+    }],
+  }), /invalid_feishu_job_id:/);
+});
+
 test("requires at least one enabled job", () => {
   assert.throws(() => normalizeJobsPayload({
     jobs: [{

@@ -130,11 +130,17 @@ function renderJobs(result) {
   const jobs = result.jobs || [];
   const pipelineSelect = $("pipelineJobKey");
   const recommendSelect = $("jobId");
+  const jobMatchBadge = $("jobMatchBadge");
   pipelineSelect.replaceChildren(new Option("全部启用岗位", "all"));
   recommendSelect.replaceChildren();
   for (const job of jobs) {
     pipelineSelect.add(new Option(job.display_name, job.job_key));
     recommendSelect.add(new Option(job.display_name, job.job_key));
+  }
+  if (jobMatchBadge) {
+    const configured = jobs.length > 0;
+    jobMatchBadge.textContent = configured ? "岗位名称已匹配" : "请先新增岗位";
+    jobMatchBadge.className = `badge ${configured ? "ok" : "neutral"}`;
   }
   $("jobRoutes").innerHTML = jobs.map((job) => `
     <div class="route-card ${job.feishu_configured ? "" : "missing"}">
@@ -161,6 +167,21 @@ function createJobDraft() {
   };
 }
 
+function parseFeishuHireJobId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d+$/.test(raw)) return raw;
+  try {
+    const parsed = new URL(raw);
+    const jobId = parsed.searchParams.get("job_id");
+    if (jobId && /^\d+$/.test(jobId)) return jobId;
+    const pathMatch = parsed.pathname.match(/\/hire\/job\/(\d+)(?:\/|$)/);
+    if (pathMatch) return pathMatch[1];
+  } catch { /* keep the validation path below */ }
+  const match = raw.match(/[?&]job_id=(\d+)(?:&|$)|\/hire\/job\/(\d+)(?:[/?#]|$)/);
+  return match ? match[1] || match[2] : raw;
+}
+
 function renderJobConfig(config) {
   jobConfig = {
     version: config.version || 1,
@@ -185,8 +206,8 @@ function jobEditorRow(job, index) {
       <small>必须和 Boss 页面岗位名称一致</small>
     </label>
     <label class="field">飞书岗位 ID
-      <input data-job-field="feishu_hire_job_id" type="text" value="${escapeHtml(job.feishu_hire_job_id)}" placeholder="可留空">
-      <small>留空时只参与 Boss 流程，同步飞书会跳过</small>
+      <input data-job-field="feishu_hire_job_id" type="text" value="${escapeHtml(job.feishu_hire_job_id)}" placeholder="可粘贴飞书招聘岗位页面 URL">
+      <small>可粘贴飞书招聘岗位页面 URL，系统会自动提取 job_id；留空时同步飞书会跳过</small>
     </label>
     <div>
       <label class="job-enabled">
@@ -215,13 +236,13 @@ async function loadJobConfig() {
 function collectJobConfig() {
   const jobs = [...document.querySelectorAll(".job-editor")].map((row) => ({
     display_name: row.querySelector('[data-job-field="display_name"]').value.trim(),
-    feishu_hire_job_id: row.querySelector('[data-job-field="feishu_hire_job_id"]').value.trim(),
+    feishu_hire_job_id: parseFeishuHireJobId(row.querySelector('[data-job-field="feishu_hire_job_id"]').value),
     enabled: row.querySelector('[data-job-field="enabled"]').checked,
   }));
   for (const job of jobs) {
     if (!job.display_name) throw new Error("岗位名称不能为空");
     if (job.feishu_hire_job_id && !/^\d+$/.test(job.feishu_hire_job_id)) {
-      throw new Error(`飞书岗位 ID 必须是纯数字：${job.display_name}`);
+      throw new Error(`飞书岗位 ID 必须是纯数字，或粘贴包含 job_id 的飞书招聘岗位 URL：${job.display_name}。URL 中没有找到 job_id。`);
     }
   }
   if (!jobs.some((job) => job.enabled)) throw new Error("至少需要启用一个岗位");
@@ -513,7 +534,10 @@ for (const button of document.querySelectorAll(".pipeline-start")) {
     const chatLimit = Math.max(1, Math.min(200, Number($("chatLimit").value) || 20));
     const collectLimit = Math.max(1, Math.min(200, Number($("collectLimit").value) || 50));
     const syncLimit = Math.max(1, Math.min(50, Number($("syncLimit").value) || 1));
-    const deleteUploadedResumes = $("deleteUploadedResumes").checked;
+    const deleteUploadedResumes = false;
+    const minAge = $("chatMinAge").value === "" ? "" : Number($("chatMinAge").value);
+    const maxAge = $("chatMaxAge").value === "" ? "" : Number($("chatMaxAge").value);
+    const minEducation = $("chatMinEducation").value;
     const labels = {
       chat: "处理沟通页",
       collect: "全局搜索并收取简历",
@@ -535,6 +559,9 @@ for (const button of document.querySelectorAll(".pipeline-start")) {
           jobKey,
           syncLimit,
           deleteUploadedResumes,
+          minAge,
+          maxAge,
+          minEducation,
         }),
       });
       renderPipeline(state);
@@ -573,7 +600,7 @@ $("pipelineStatusBtn").addEventListener("click", () => loadPipelineState());
 $("toggleJobConfigBtn").addEventListener("click", async () => {
   const panel = $("jobConfigPanel");
   panel.hidden = !panel.hidden;
-  $("toggleJobConfigBtn").textContent = panel.hidden ? "编辑岗位配置" : "收起岗位配置";
+  $("toggleJobConfigBtn").classList.toggle("is-open", !panel.hidden);
   if (!panel.hidden && !jobConfig) await loadJobConfig();
 });
 $("addJobBtn").addEventListener("click", () => {
@@ -585,7 +612,7 @@ $("saveJobsBtn").addEventListener("click", saveJobConfig);
 $("toggleMessageConfigBtn").addEventListener("click", async () => {
   const panel = $("messageConfigPanel");
   panel.hidden = !panel.hidden;
-  $("toggleMessageConfigBtn").textContent = panel.hidden ? "编辑话术配置" : "收起话术配置";
+  $("toggleMessageConfigBtn").classList.toggle("is-open", !panel.hidden);
   if (!panel.hidden && !messageConfig) await loadMessageConfig();
 });
 $("saveMessagesBtn").addEventListener("click", saveMessageConfig);

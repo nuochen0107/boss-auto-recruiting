@@ -38,6 +38,26 @@ test("matches job names when the page text has an explicit suffix boundary", () 
   assert.equal(matchJobFromText(config, "DSP运营（南京）").job.job_key, "dsp_operations");
 });
 
+test("matches job names split onto their own chat-list line", () => {
+  const config = {
+    version: 1,
+    jobs: [{
+      job_key: "product_operations",
+      display_name: "产品运营",
+      boss_job_names: ["产品运营"],
+      enabled: true,
+    }, {
+      job_key: "product_operations_manager",
+      display_name: "产品运营经理",
+      boss_job_names: ["产品运营经理"],
+      enabled: true,
+    }],
+  };
+
+  assert.equal(matchJobFromText(config, "14:54\n何飞扬\n产品运营\n[送达]您好").job.job_key, "product_operations");
+  assert.equal(matchJobFromText(config, "14:54\n何飞扬\n产品运营经理\n[送达]您好").job.job_key, "product_operations_manager");
+});
+
 test("matches job names that contain internal spaces before a suffix boundary", () => {
   const config = {
     version: 1,

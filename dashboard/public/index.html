@@ -29,6 +29,10 @@
           <span class="status-label">当前环境</span>
           <span class="badge info">本地运行</span>
         </div>
+        <div class="header-user" aria-hidden="true">
+          <span class="avatar">HR</span>
+          <span class="header-icon">⌁</span>
+        </div>
       </div>
     </div>
   </header>
@@ -36,173 +40,205 @@
   <main class="shell">
     <section class="page-heading">
       <div>
-        <p class="eyebrow">RECRUITING WORKSPACE</p>
         <h1>招聘流程控制台</h1>
-        <p class="page-description">统一执行 Boss 沟通、简历收取、飞书同步及推荐候选人触达。启动任务前请确认浏览器连接和岗位路由状态。</p>
+        <p class="page-description">统一执行 Boss 沟通、简历收取、飞书同步及推荐候选人触达。</p>
       </div>
-      <button id="pipelineStatusBtn" class="button secondary refresh-button">
+      <button id="pipelineStatusBtn" class="button secondary refresh-button" type="button">
         <span aria-hidden="true">↻</span>刷新运行状态
       </button>
     </section>
 
-    <section class="mode-section" aria-labelledby="mode-title">
-      <div class="mode-heading">
-        <div>
-          <span class="section-kicker">全局执行设置</span>
-          <h2 id="mode-title">执行方式</h2>
-        </div>
-        <p>该设置同时应用于日常招聘流程和推荐牛人页任务。</p>
-      </div>
-      <fieldset class="mode-picker">
-        <legend class="sr-only">选择执行方式</legend>
-        <label class="mode-option real-mode">
-          <input type="radio" name="mode" value="real-run">
-          <span class="mode-radio"></span>
-          <span class="mode-copy">
-            <strong>真实执行</strong>
-            <small>将实际操作 Boss 页面、下载简历并同步至飞书</small>
-          </span>
-          <span class="tag tag-processing">实际操作</span>
-        </label>
-        <label class="mode-option safe-mode">
-          <input type="radio" name="mode" value="dry-run" checked>
-          <span class="mode-radio"></span>
-          <span class="mode-copy">
-            <strong>演练模式</strong>
-            <small>执行页面识别和流程校验，不发送、不下载、不上传</small>
-          </span>
-          <span class="tag tag-default">仅校验</span>
-        </label>
-      </fieldset>
-      <div class="real-run-warning">
-        <strong>真实执行模式已启用</strong>
-        <span>任务会产生实际操作并消耗 Boss 沟通权益。请确认岗位、人数上限及浏览器页面无误。</span>
-      </div>
-    </section>
-
-    <div class="console-grid">
+    <div class="console-grid redesigned-grid">
       <div class="main-column">
-        <section class="panel workflow-panel">
-          <div class="section-title">
+        <section class="mode-section panel" aria-labelledby="mode-title">
+          <div class="section-title compact">
             <div>
-              <span class="section-kicker">日常招聘流程</span>
-              <h2>候选人处理链路</h2>
-              <p>按需单独执行步骤，或启动“沟通 + 收简历”连续流程。</p>
+              <h2 id="mode-title">执行方式</h2>
             </div>
-            <span class="tag tag-default">3 个步骤</span>
           </div>
-
-          <div class="workflow-grid">
-            <article class="workflow-card">
-              <div class="step-rail">
-                <span class="step-number">1</span>
-                <span class="step-line"></span>
-              </div>
-              <div class="step-content">
-                <div class="step-title-row">
-                  <div>
-                    <span class="step-type">BOSS 沟通</span>
-                    <h3>处理沟通页</h3>
-                  </div>
-                  <span class="tag tag-processing">可单独执行</span>
-                </div>
-                <p>逐个选择 Boss 岗位，只处理当前岗位会话，并向尚未索要简历的候选人发送一次消息。</p>
-                <button class="button secondary pipeline-start" data-pipeline="chat">开始处理沟通页</button>
-              </div>
-            </article>
-
-            <article class="workflow-card">
-              <div class="step-rail">
-                <span class="step-number">2</span>
-                <span class="step-line"></span>
-              </div>
-              <div class="step-content">
-                <div class="step-title-row">
-                  <div>
-                    <span class="step-type">简历归档</span>
-                    <h3>收取简历</h3>
-                  </div>
-                  <span class="tag tag-processing">可单独执行</span>
-                </div>
-                <p>使用全局姓名搜索定位候选人，强制校验岗位后下载附件，并按岗位保存到本地。</p>
-                <button class="button secondary pipeline-start" data-pipeline="collect">开始收取简历</button>
-              </div>
-            </article>
-
-            <article class="workflow-card">
-              <div class="step-rail">
-                <span class="step-number">3</span>
-              </div>
-              <div class="step-content">
-                <div class="step-title-row">
-                  <div>
-                    <span class="step-type">ATS 同步</span>
-                    <h3>同步飞书招聘</h3>
-                  </div>
-                  <span class="tag tag-processing">可单独执行</span>
-                </div>
-                <p>将本地简历同步到岗位路由表指定的飞书招聘岗位，测试时建议每次只处理 1 人。</p>
-                <button class="button secondary pipeline-start" data-pipeline="sync">开始同步飞书</button>
-              </div>
-            </article>
+          <fieldset class="mode-picker">
+            <legend class="sr-only">选择执行方式</legend>
+            <label class="mode-option real-mode">
+              <input type="radio" name="mode" value="real-run" checked>
+              <span class="mode-radio"></span>
+              <span class="mode-copy">
+                <strong>真实执行</strong>
+                <small>发送、下载、同步</small>
+              </span>
+            </label>
+            <label class="mode-option safe-mode">
+              <input type="radio" name="mode" value="dry-run">
+              <span class="mode-radio"></span>
+              <span class="mode-copy">
+                <strong>演练模式</strong>
+                <small>只校验流程</small>
+              </span>
+            </label>
+          </fieldset>
+          <div class="real-run-warning">
+            <strong>真实执行模式已启用</strong>
+            <span>任务会产生实际操作并消耗 Boss 沟通权益。请确认岗位、人数上限及浏览器页面无误。</span>
           </div>
         </section>
 
-        <section class="panel parameters-panel">
-          <div class="section-title">
+        <section class="panel job-selection-panel">
+          <div class="section-title compact">
             <div>
-              <span class="section-kicker">任务配置</span>
-              <h2>执行参数</h2>
-              <p>参数仅作用于本次任务，人数上限用于控制单次运行范围。</p>
+              <h2>岗位选择</h2>
             </div>
           </div>
-
-          <div class="form-grid compact-grid">
+          <div class="job-select-row">
             <label class="field">处理岗位
               <select id="pipelineJobKey">
                 <option value="all">全部启用岗位</option>
               </select>
-              <small>选择全部时将依次处理所有启用岗位</small>
             </label>
-            <label class="field">每个岗位最多沟通人数
-              <input id="chatLimit" type="number" min="1" max="200" value="20">
-              <small>范围 1–200 人</small>
-            </label>
-            <label class="field">本次最多收取简历人数
-              <input id="collectLimit" type="number" min="1" max="200" value="50">
-              <small>范围 1–200 人</small>
-            </label>
-            <label class="field">本次最多同步人数
-              <input id="syncLimit" type="number" min="1" max="50" value="1">
-              <small>建议首次运行设置为 1 人</small>
-            </label>
-          </div>
-
-          <label class="checkbox-field">
-            <input id="deleteUploadedResumes" type="checkbox">
-            <span>
-              <strong>上传成功后清理本地简历</strong>
-              <small>仅删除本次成功上传并确认创建人才和投递记录的文件</small>
-            </span>
-          </label>
-
-          <div class="subsection-heading">
-            <div>
-              <h3>岗位路由</h3>
-              <p>Boss 岗位名称与飞书招聘岗位的对应关系</p>
+            <div class="job-match-status">
+              <span>岗位状态</span>
+              <strong id="jobMatchBadge" class="badge neutral">岗位加载中</strong>
             </div>
           </div>
-          <div id="jobRoutes" class="route-list">
+          <div id="jobRoutes" class="route-list compact-routes">
             <div class="check-card neutral"><strong>岗位路由加载中</strong></div>
           </div>
+        </section>
 
-          <div class="job-config-header">
+        <section class="panel workflow-panel">
+          <div class="section-title workflow-title-row">
             <div>
-              <h3>岗位配置</h3>
-              <p>HR 可在这里新增岗位，并维护岗位名称和飞书招聘岗位 ID。</p>
+              <h2>每日招聘流程链路</h2>
+              <p>按顺序执行以下 3 个步骤，建议每天完整运行一次。</p>
             </div>
-            <button id="toggleJobConfigBtn" class="button secondary" type="button">编辑岗位配置</button>
+            <div class="workflow-filter-row" aria-label="沟通页筛选条件">
+              <label class="field">学历要求
+                <select id="chatMinEducation">
+                  <option value="">不限</option>
+                  <option value="1">大专及以上</option>
+                  <option value="2">本科及以上</option>
+                  <option value="3">硕士及以上</option>
+                  <option value="4">博士</option>
+                </select>
+              </label>
+              <div class="field compact-range-field">年龄范围
+                <div class="inline-inputs">
+                  <input id="chatMinAge" type="number" min="18" max="45" value="18" aria-label="最低年龄">
+                  <span aria-hidden="true">-</span>
+                  <input id="chatMaxAge" type="number" min="18" max="45" value="45" aria-label="最高年龄">
+                </div>
+              </div>
+            </div>
           </div>
+
+          <div class="workflow-grid process-cards">
+            <article class="workflow-card process-card">
+              <div class="step-number">1</div>
+              <div class="step-content">
+                <h3>处理沟通页</h3>
+                <p>逐个处理沟通页并向候选人发送一次消息。</p>
+                <label class="field">处理上限（人）
+                  <input id="chatLimit" type="number" min="1" max="200" value="20">
+                </label>
+                <button class="button primary pipeline-start" data-pipeline="chat" type="button">执行步骤</button>
+              </div>
+            </article>
+
+            <span class="process-arrow" aria-hidden="true">···›</span>
+
+            <article class="workflow-card process-card">
+              <div class="step-number">2</div>
+              <div class="step-content">
+                <h3>收取简历</h3>
+                <p>搜索应聘候选人并下载保存到本地。</p>
+                <label class="field">处理上限（人）
+                  <input id="collectLimit" type="number" min="1" max="200" value="50">
+                </label>
+                <button class="button primary pipeline-start" data-pipeline="collect" type="button">执行步骤</button>
+              </div>
+            </article>
+
+            <span class="process-arrow" aria-hidden="true">···›</span>
+
+            <article class="workflow-card process-card">
+              <div class="step-number">3</div>
+              <div class="step-content">
+                <h3>同步飞书招聘</h3>
+                <p>同步岗位和候选人到飞书招聘看板。</p>
+                <label class="field">处理上限（人）
+                  <input id="syncLimit" type="number" min="1" max="50" value="1">
+                </label>
+                <button class="button primary pipeline-start" data-pipeline="sync" type="button">执行步骤</button>
+              </div>
+            </article>
+          </div>
+
+          <div class="action-bar full-flow-actions">
+            <button class="button secondary pipeline-start" data-pipeline="front" type="button">执行完整流程</button>
+            <button id="pipelinePauseBtn" class="button danger-button" type="button">暂停当前流程</button>
+          </div>
+        </section>
+
+        <section class="panel recommend-panel">
+          <div class="section-title">
+            <div>
+              <h2>推荐牛人页打招呼</h2>
+              <p>自动触发任务，向推荐页候选人发送打招呼消息。</p>
+            </div>
+          </div>
+
+          <div class="form-grid recommend-grid">
+            <label class="field recommend-job-field">推荐岗位
+              <select id="jobId"><option value="ai_app_intern">AI应用实习生</option></select>
+              <small>默认同步岗位选择，可单独调整</small>
+            </label>
+            <label class="field compact-number-field">今日目标人数
+              <input id="dailyTargetNumber" type="number" min="1" max="200" value="20" aria-label="今日目标人数">
+              <input id="dailyTarget" class="sr-only-range" type="range" min="1" max="200" value="20" aria-hidden="true" tabindex="-1">
+              <small>当天计划触达的候选人数</small>
+            </label>
+            <label class="field compact-number-field">每批人数
+              <input id="batchSize" type="number" min="1" max="50" value="50">
+              <small>每批最多处理人数</small>
+            </label>
+            <label class="field compact-hidden-setting">批次间隔（分钟）
+              <input id="batchIntervalMinutes" type="number" min="0" max="1440" step="0.5" value="30">
+              <small>设为 0 表示批次间不等待</small>
+            </label>
+          </div>
+
+          <div class="action-bar">
+            <button id="startBtn" class="button primary compact-start-button" type="button">开始推荐任务</button>
+            <div class="actions secondary-actions">
+              <button id="reportBtn" class="button secondary" type="button">查看今日报告</button>
+              <button id="pauseBtn" class="button danger-button" type="button">暂停推荐页任务</button>
+            </div>
+          </div>
+
+          <div class="metrics">
+            <article><span>任务状态</span><strong id="status">空闲</strong></article>
+            <article><span>已扫描</span><strong id="scanned">0</strong></article>
+            <article><span>待触达</span><strong id="eligible">0</strong></article>
+            <article><span>已打招呼</span><strong id="greeted">0</strong></article>
+            <article><span>已跳过</span><strong id="skipped">0</strong></article>
+            <article><span>失败</span><strong id="failed">0</strong></article>
+          </div>
+          <div id="notice" class="notice">当前没有运行中的推荐页任务</div>
+        </section>
+
+        <section class="panel advanced-panel">
+          <div class="section-title compact">
+            <div>
+              <h2>高级设置</h2>
+            </div>
+          </div>
+
+          <button id="toggleJobConfigBtn" class="settings-row" type="button">
+            <span class="settings-icon settings-icon-jobs" aria-hidden="true"></span>
+            <span>
+              <strong>岗位设置</strong>
+              <small>管理 Boss 岗位匹配规则、岗位名称映射及 HR 位置等</small>
+            </span>
+            <span aria-hidden="true">›</span>
+          </button>
           <div id="jobConfigPanel" class="job-config-panel" hidden>
             <div class="job-config-toolbar">
               <span id="jobConfigFile" class="config-file">配置文件加载中</span>
@@ -215,13 +251,14 @@
             <div id="jobConfigNotice" class="notice">修改岗位配置后保存，任务下拉框会自动刷新。</div>
           </div>
 
-          <div class="job-config-header">
-            <div>
-              <h3>话术配置</h3>
-              <p>维护索要简历和收到简历后的自动回复内容。</p>
-            </div>
-            <button id="toggleMessageConfigBtn" class="button secondary" type="button">编辑话术配置</button>
-          </div>
+          <button id="toggleMessageConfigBtn" class="settings-row" type="button">
+            <span class="settings-icon settings-icon-message" aria-hidden="true"></span>
+            <span>
+              <strong>话术设置</strong>
+              <small>维护沟通开场白、话术模板及自动回复内容</small>
+            </span>
+            <span aria-hidden="true">›</span>
+          </button>
           <div id="messageConfigPanel" class="job-config-panel" hidden>
             <div class="job-config-toolbar">
               <span id="messageConfigFile" class="config-file">配置文件加载中</span>
@@ -242,62 +279,8 @@
             <div id="messageConfigNotice" class="notice">修改话术后保存，后续新任务会使用最新内容。</div>
           </div>
 
-          <div class="action-bar">
-            <div class="actions">
-              <button class="button primary pipeline-start" data-pipeline="front">沟通并收简历</button>
-              <button id="cleanupUploadedResumesBtn" class="button secondary">清理全部历史已上传简历</button>
-            </div>
-            <button id="pipelinePauseBtn" class="button danger-button">暂停当前流程</button>
-          </div>
-        </section>
-
-        <section class="panel recommend-panel">
-          <div class="section-title">
-            <div>
-              <span class="section-kicker">主动触达</span>
-              <h2>推荐牛人页打招呼</h2>
-              <p>任务启动后会按所选岗位自动切换 Boss 推荐页职位。</p>
-            </div>
-            <span class="tag tag-warning">消耗沟通权益</span>
-          </div>
-
-          <div class="form-grid recommend-grid">
-            <label class="field">推荐岗位
-              <select id="jobId"><option value="ai_app_intern">AI应用实习生</option></select>
-              <small>演练模式也会执行岗位切换验证</small>
-            </label>
-            <label class="field">今日目标人数
-              <div class="range-row">
-                <input id="dailyTarget" type="range" min="1" max="200" value="20">
-                <input id="dailyTargetNumber" type="number" min="1" max="200" value="20" aria-label="今日目标人数">
-              </div>
-              <small>当天计划触达的候选人数</small>
-            </label>
-            <label class="field">每批人数
-              <input id="batchSize" type="number" min="1" max="50" value="50">
-              <small>单批最多处理 50 人</small>
-            </label>
-            <label class="field">批次间隔（分钟）
-              <input id="batchIntervalMinutes" type="number" min="0" max="1440" step="0.5" value="30">
-              <small>设为 0 表示批次间不等待</small>
-            </label>
-          </div>
-
-          <div class="action-bar">
-            <div class="actions">
-              <button id="startBtn" class="button primary">开始推荐页任务</button>
-              <button id="reportBtn" class="button secondary">查看今日报告</button>
-            </div>
-            <button id="pauseBtn" class="button danger-button">暂停推荐页任务</button>
-          </div>
-
-          <div class="metrics">
-            <article><span>任务状态</span><strong id="status">空闲</strong></article>
-            <article><span>已扫描</span><strong id="scanned">0</strong></article>
-            <article><span>待触达</span><strong id="eligible">0</strong></article>
-            <article><span>已打招呼</span><strong id="greeted">0</strong></article>
-            <article><span>已跳过</span><strong id="skipped">0</strong></article>
-            <article><span>失败</span><strong id="failed">0</strong></article>
+          <div class="advanced-inline-actions">
+            <button id="cleanupUploadedResumesBtn" class="button secondary" type="button">清理全部历史已上传简历</button>
           </div>
         </section>
       </div>
@@ -306,7 +289,6 @@
         <section class="panel status-panel">
           <div class="section-title compact">
             <div>
-              <span class="section-kicker">运行监控</span>
               <h2>流程状态</h2>
             </div>
           </div>
@@ -328,31 +310,20 @@
           <div id="manualReviewPanel" class="manual-review-list" hidden></div>
         </section>
 
-        <section class="panel status-panel">
-          <div class="section-title compact">
-            <div>
-              <span class="section-kicker">推荐页任务</span>
-              <h2>执行结果</h2>
-            </div>
-          </div>
-          <div id="notice" class="notice">当前没有运行中的推荐页任务</div>
-        </section>
-
         <section class="panel environment-panel">
           <div class="section-title compact">
             <div>
-              <span class="section-kicker">运行准备</span>
               <h2>环境检查</h2>
+              <p>执行任务前，确认 Chrome 远程调试和浏览器连接服务均正常。</p>
             </div>
-          </div>
-          <p class="section-help">执行任务前，确认 Chrome 远程调试和浏览器连接服务均正常。</p>
-          <div class="actions environment-actions">
-            <button id="proxyBtn" class="button secondary">启动浏览器连接</button>
-            <button id="preflightBtn" class="button primary">立即检查</button>
-            <button id="shutdownBtn" class="button danger-button" type="button">退出助手</button>
           </div>
           <div id="preflightChecks" class="check-list">
             <div class="check-card neutral"><strong>尚未检查</strong><p>点击“立即检查”获取当前环境状态。</p></div>
+          </div>
+          <div class="actions environment-actions">
+            <button id="proxyBtn" class="button secondary" type="button">启动浏览器连接</button>
+            <button id="preflightBtn" class="button primary" type="button">立即检查</button>
+            <button id="shutdownBtn" class="button danger-button" type="button">退出助手</button>
           </div>
         </section>
       </aside>
@@ -361,7 +332,6 @@
     <section class="panel details-panel">
       <div class="section-title compact">
         <div>
-          <span class="section-kicker">诊断与审计</span>
           <h2>任务记录</h2>
         </div>
         <span class="tag tag-default">JSON 日志</span>
@@ -378,6 +348,7 @@
       </div>
     </section>
   </main>
+
   <script type="module" src="/app.js"></script>
 </body>
 </html>

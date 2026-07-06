@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { normalizeProfileFilter } from "../boss-loop/profile-filter.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, "..");
@@ -97,7 +98,7 @@ function cleanupChildBossLock(childPid) {
   }
 }
 
-function normalizeOptions(input = {}) {
+export function normalizeOptions(input = {}) {
   const jobsConfig = loadJobsConfig(ROOT);
   const jobs = enabledJobs(jobsConfig);
   const type = ["chat", "collect", "front", "sync", "full"].includes(input.type) ? input.type : "chat";
@@ -114,6 +115,11 @@ function normalizeOptions(input = {}) {
   const selectedJobs = jobKey === "all" ? jobs : [findJobByKey(jobsConfig, jobKey)];
   const syncLimit = Math.max(1, Math.min(50, Number(input.syncLimit) || 1));
   const deleteUploadedResumes = input.deleteUploadedResumes === true;
+  const profileFilter = normalizeProfileFilter({
+    minAge: input.minAge,
+    maxAge: input.maxAge,
+    minEducation: input.minEducation,
+  });
   const syncJobs = selectedJobs.filter((job) => /^\d+$/.test(job.feishu_hire_job_id));
   if (["sync", "full"].includes(type) && jobKey !== "all" && !syncJobs.length) {
     const error = new Error(`missing_feishu_job_routes:${selectedJobs.map((job) => job.job_key).join(",")}`);
@@ -145,11 +151,18 @@ function normalizeOptions(input = {}) {
     jobsFile: jobsConfig.file,
     syncLimit,
     deleteUploadedResumes,
+    profileFilter,
   };
 }
 
-function stagesFor(options) {
+export function stagesFor(options) {
   const dry = options.mode === "dry-run";
+  const profileArgs = [];
+  if (options.profileFilter?.minAge != null) profileArgs.push("--min-age", String(options.profileFilter.minAge));
+  if (options.profileFilter?.maxAge != null) profileArgs.push("--max-age", String(options.profileFilter.maxAge));
+  if (options.profileFilter?.minEducation != null) {
+    profileArgs.push("--min-education", String(options.profileFilter.minEducation));
+  }
   const collectArgs = [
     "--max-collect-per-run", String(options.collectLimit),
   ];
@@ -167,6 +180,7 @@ function stagesFor(options) {
       "--job-key", job.job_key,
       "--max-greet-per-run", String(options.chatLimit),
       "--skip-recommend",
+      ...profileArgs,
       ...(dry ? ["--dry-run"] : []),
     ],
   }));
